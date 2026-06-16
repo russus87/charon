@@ -1,0 +1,41 @@
+# PKGBUILD per Charon — genera un pacchetto Arch .pkg.tar.zst.
+# Pensato per la CI: la versione viene iniettata da release.yml (sed su pkgver).
+# Compila dal sorgente gia' presente nel repo e impacchetta il binario.
+pkgname=charon
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Dump, import e clonazione di database: PostgreSQL, Oracle, SQL Server (Rust + Tauri + Svelte)"
+arch=('x86_64')
+url="https://github.com/russus87/charon"
+license=('MIT')
+# Dipendenze a runtime: webkit per la finestra Tauri, gtk3 per la UI nativa.
+depends=('webkit2gtk-4.1' 'gtk3')
+makedepends=('rust' 'cargo' 'nodejs' 'npm')
+optdepends=(
+    'postgresql-libs: tool nativi pg_dump/psql per PostgreSQL'
+    'mssql-tools: sqlcmd/bcp per SQL Server'
+)
+options=('!strip' '!lto')
+
+# Il PKGBUILD sta in packaging/, quindi la root del repo e' la cartella superiore.
+_repo() { echo "$startdir/.."; }
+
+build() {
+    cd "$(_repo)"
+    npm install
+    # Si compila con la CLI di Tauri (modalita' produzione, frontend incorporato).
+    # --no-bundle: niente installer, il pacchetto lo fa makepkg.
+    npm run tauri build -- --no-bundle
+}
+
+package() {
+    cd "$(_repo)"
+    # In un workspace Cargo il binario finisce in target/ alla root del repo.
+    install -Dm755 "target/release/charon" "$pkgdir/usr/bin/charon"
+    install -Dm644 "packaging/charon.desktop" \
+        "$pkgdir/usr/share/applications/charon.desktop"
+    install -Dm644 "src-tauri/icons/128x128.png" \
+        "$pkgdir/usr/share/icons/hicolor/128x128/apps/charon.png"
+    install -Dm644 "src-tauri/icons/icon.png" \
+        "$pkgdir/usr/share/icons/hicolor/512x512/apps/charon.png"
+}

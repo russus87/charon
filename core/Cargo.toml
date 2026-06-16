@@ -1,0 +1,40 @@
+# Crate "core": tutta la logica di dump/import/clone dei database, in Rust puro
+# (niente Tauri). Strategia IBRIDA: se i tool nativi (pg_dump, sqlcmd, expdp, ...)
+# sono presenti vengono usati quelli; altrimenti si tenta un fallback puro Rust
+# tramite i driver (best-effort). Vedi README per i dettagli.
+[package]
+name = "charon-core"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Il fallback puro Rust per Postgres e SQL Server e' attivo di default.
+default = ["pg-driver", "mssql-driver"]
+pg-driver = ["dep:tokio-postgres"]
+mssql-driver = ["dep:tiberius", "dep:tokio-util", "dep:futures-util"]
+# Il driver Oracle (crate `oracle`) richiede l'Oracle Instant Client in fase di
+# link: NON e' attivabile nelle build CI standard. Off di default: per Oracle si
+# usano i tool nativi (expdp/impdp/sqlplus). Attivalo solo in locale se hai il client.
+oracle-driver = ["dep:oracle"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Runtime asincrono usato dai driver del fallback puro Rust.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "time", "io-util"] }
+
+# --- Fallback puro Rust: PostgreSQL ---
+tokio-postgres = { version = "0.7", optional = true, features = ["with-serde_json-1"] }
+
+# --- Fallback puro Rust: SQL Server (driver TDS puro Rust) ---
+tiberius = { version = "0.12", optional = true, default-features = false, features = ["rustls", "tds73"] }
+tokio-util = { version = "0.7", optional = true, features = ["compat"] }
+futures-util = { version = "0.3", optional = true }
+
+# --- Fallback Oracle (opzionale, richiede Instant Client) ---
+oracle = { version = "0.6", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

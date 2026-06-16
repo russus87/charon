@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Charon
+Comment=Dump, import e clonazione di database (PostgreSQL, Oracle, SQL Server)
+Exec=charon
+Icon=charon
+Terminal=false
+Categories=Development;Database;Utility;
+Keywords=database;dump;backup;import;clone;postgres;oracle;sqlserver;

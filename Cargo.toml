@@ -1,0 +1,6 @@
+# Workspace Cargo di Charon: la logica DB (core) e l'app desktop (src-tauri).
+# Stessa struttura di GlyphBox/Oxiterm: il "core" e' Rust puro e non dipende da
+# Tauri, cosi' la logica di dump/import/clone resta riutilizzabile (anche da CLI).
+[workspace]
+members = ["core", "src-tauri"]
+resolver = "2"

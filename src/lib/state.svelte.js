@@ -31,7 +31,39 @@ export const app = $state({
   importPath: "", // file da importare
   busy: false, // operazione in corso
   result: null, // ultimo OpResult
+  // Opzioni del clone. dataOnly: preserva lo schema destinazione (TRUNCATE+dati).
+  // mask: regole {table, column, kind, value} (value solo per kind='fixed').
+  cloneOpts: { dataOnly: false, mask: [] },
 });
+
+// Strategie di mascheramento disponibili (kind = tag serde lato Rust).
+export const MASK_KINDS = [
+  { kind: "hash", label: "Hash (pseudonimo)" },
+  { kind: "email", label: "Email fittizia" },
+  { kind: "redact", label: "Offusca (asterischi)" },
+  { kind: "null", label: "NULL" },
+  { kind: "fixed", label: "Valore fisso" },
+];
+
+export function addMaskRule() {
+  app.cloneOpts.mask.push({ table: "", column: "", kind: "hash", value: "" });
+}
+
+export function removeMaskRule(i) {
+  app.cloneOpts.mask.splice(i, 1);
+}
+
+// Costruisce l'oggetto CloneOptions come lo attende il backend Rust (serde).
+function buildCloneOptions() {
+  const mask = app.cloneOpts.mask
+    .filter((m) => m.table.trim() && m.column.trim())
+    .map((m) => ({
+      table: m.table.trim(),
+      column: m.column.trim(),
+      strategy: m.kind === "fixed" ? { kind: "fixed", value: m.value } : { kind: m.kind },
+    }));
+  return { data_only: app.cloneOpts.dataOnly, mask };
+}
 
 // Cambia motore e adegua la porta di default.
 export function setEngine(conn, engine) {
@@ -70,4 +102,4 @@ export const runDump = () =>
 export const runImport = () =>
   withBusy(() => importDump(app.conn, app.importPath, app.prefer));
 export const runClone = () =>
-  withBusy(() => cloneDatabase(app.conn, app.target, app.prefer));
+  withBusy(() => cloneDatabase(app.conn, app.target, app.prefer, buildCloneOptions()));

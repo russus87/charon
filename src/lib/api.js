@@ -13,8 +13,8 @@ export const dumpDatabase = (conn, out, prefer) =>
 export const importDump = (conn, input, prefer) =>
   invoke("import_dump", { conn, input, prefer });
 
-export const cloneDatabase = (source, target, prefer) =>
-  invoke("clone_database", { source, target, prefer });
+export const cloneDatabase = (source, target, prefer, options) =>
+  invoke("clone_database", { source, target, prefer, options });
 
 // Dialoghi nativi per scegliere i file di dump.
 export const pickSavePath = (defaultName) =>

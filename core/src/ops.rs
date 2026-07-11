@@ -109,14 +109,20 @@ fn dispatch_import(conn: &Connection, input: &str, m: Method, log: &mut Vec<Stri
     }
 }
 
-fn dispatch_clone(src: &Connection, dst: &Connection, m: Method, log: &mut Vec<String>) -> Result<()> {
+fn dispatch_clone(
+    src: &Connection,
+    dst: &Connection,
+    m: Method,
+    opts: &CloneOptions,
+    log: &mut Vec<String>,
+) -> Result<()> {
     match (src.engine, m) {
-        (Engine::Postgres, Method::Native) => postgres::native_clone(src, dst, log),
-        (Engine::Postgres, Method::Rust) => postgres::rust_clone(src, dst, log),
-        (Engine::Sqlserver, Method::Native) => mssql::native_clone(src, dst, log),
-        (Engine::Sqlserver, Method::Rust) => mssql::rust_clone(src, dst, log),
-        (Engine::Oracle, Method::Native) => oracle::native_clone(src, dst, log),
-        (Engine::Oracle, Method::Rust) => oracle::rust_clone(src, dst, log),
+        (Engine::Postgres, Method::Native) => postgres::native_clone(src, dst, opts, log),
+        (Engine::Postgres, Method::Rust) => postgres::rust_clone(src, dst, opts, log),
+        (Engine::Sqlserver, Method::Native) => mssql::native_clone(src, dst, opts, log),
+        (Engine::Sqlserver, Method::Rust) => mssql::rust_clone(src, dst, opts, log),
+        (Engine::Oracle, Method::Native) => oracle::native_clone(src, dst, opts, log),
+        (Engine::Oracle, Method::Rust) => oracle::rust_clone(src, dst, opts, log),
     }
 }
 
@@ -157,7 +163,7 @@ pub fn import(conn: &Connection, input: &str, prefer: Prefer) -> OpResult {
 }
 
 /// Clona il database `src` su `dst` (devono essere dello stesso motore).
-pub fn clone(src: &Connection, dst: &Connection, prefer: Prefer) -> OpResult {
+pub fn clone(src: &Connection, dst: &Connection, prefer: Prefer, opts: &CloneOptions) -> OpResult {
     if src.engine != dst.engine {
         return OpResult {
             ok: false,
@@ -167,11 +173,21 @@ pub fn clone(src: &Connection, dst: &Connection, prefer: Prefer) -> OpResult {
             log: Vec::new(),
         };
     }
+    // Il mascheramento riscrive i valori riga per riga: possibile solo col puro
+    // Rust. Se richiesto, forziamo quel metodo a prescindere dalla preferenza.
+    let effective = if opts.has_mask() { Prefer::Rust } else { prefer };
     finalize(
         src.engine,
-        prefer,
+        effective,
         "Clonazione completata".into(),
-        |m, log| dispatch_clone(src, dst, m, log),
+        |m, log| {
+            if opts.has_mask() && m != Method::Rust {
+                return Err(Error::Unsupported(
+                    "il mascheramento richiede il metodo puro Rust".into(),
+                ));
+            }
+            dispatch_clone(src, dst, m, opts, log)
+        },
     )
 }
 

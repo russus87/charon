@@ -10,6 +10,17 @@ use crate::tools::{find_tool, has_tool, run};
 use crate::{Error, Result};
 use std::process::Command;
 
+/// Data-only e masking non sono ancora implementati per SQL Server: lo diciamo
+/// chiaramente invece di ignorare l'opzione in silenzio.
+fn reject_unsupported_opts(opts: &CloneOptions) -> Result<()> {
+    if opts.data_only || opts.has_mask() {
+        return Err(Error::Unsupported(
+            "data-only e mascheramento sono al momento disponibili solo per PostgreSQL".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// `host,port` come vuole sqlcmd/mssql-scripter.
 fn server_arg(conn: &Connection) -> String {
     format!("{},{}", conn.host, conn.port)
@@ -136,7 +147,13 @@ pub fn native_import(conn: &Connection, input: &str, log: &mut Vec<String>) -> R
     }
 }
 
-pub fn native_clone(src: &Connection, dst: &Connection, log: &mut Vec<String>) -> Result<()> {
+pub fn native_clone(
+    src: &Connection,
+    dst: &Connection,
+    opts: &CloneOptions,
+    log: &mut Vec<String>,
+) -> Result<()> {
+    reject_unsupported_opts(opts)?;
     let tmp = std::env::temp_dir().join(format!("charon-mssql-{}.sql", std::process::id()));
     let tmp_s = tmp.display().to_string();
     log.push(format!("Dump temporaneo della sorgente in {tmp_s}"));
@@ -191,7 +208,13 @@ pub fn rust_import(conn: &Connection, input: &str, log: &mut Vec<String>) -> Res
     }
 }
 
-pub fn rust_clone(src: &Connection, dst: &Connection, log: &mut Vec<String>) -> Result<()> {
+pub fn rust_clone(
+    src: &Connection,
+    dst: &Connection,
+    opts: &CloneOptions,
+    log: &mut Vec<String>,
+) -> Result<()> {
+    reject_unsupported_opts(opts)?;
     #[cfg(feature = "mssql-driver")]
     {
         return rustimpl::clone(src, dst, log);

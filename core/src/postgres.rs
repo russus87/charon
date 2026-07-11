@@ -136,7 +136,20 @@ pub fn native_import(conn: &Connection, input: &str, log: &mut Vec<String>) -> R
     }
 }
 
-pub fn native_clone(src: &Connection, dst: &Connection, log: &mut Vec<String>) -> Result<()> {
+pub fn native_clone(
+    src: &Connection,
+    dst: &Connection,
+    opts: &CloneOptions,
+    log: &mut Vec<String>,
+) -> Result<()> {
+    if opts.has_mask() {
+        return Err(Error::Unsupported(
+            "il mascheramento non è disponibile con i tool nativi: usa il metodo puro Rust".into(),
+        ));
+    }
+    if opts.data_only {
+        return native_clone_data_only(src, dst, log);
+    }
     let tmp = std::env::temp_dir().join(format!("charon-pg-{}.sql", std::process::id()));
     let tmp_s = tmp.display().to_string();
     log.push(format!("Dump temporaneo della sorgente in {tmp_s}"));
@@ -144,6 +157,79 @@ pub fn native_clone(src: &Connection, dst: &Connection, log: &mut Vec<String>) -
     log.push("Import sul database di destinazione".into());
     let res = native_import(dst, &tmp_s, log);
     let _ = std::fs::remove_file(&tmp);
+    res
+}
+
+/// Clone "solo dati" con i tool nativi: `pg_dump --data-only --disable-triggers`
+/// della sorgente, poi sulla destinazione `TRUNCATE` + caricamento in un'unica
+/// transazione (lo schema della destinazione resta intatto). Massima fedeltà.
+fn native_clone_data_only(src: &Connection, dst: &Connection, log: &mut Vec<String>) -> Result<()> {
+    let pgd = pg_dump_path()?;
+    let psql = psql_path()?;
+    let pid = std::process::id();
+    let dump = std::env::temp_dir().join(format!("charon-pg-data-{pid}.sql"));
+    let load = std::env::temp_dir().join(format!("charon-pg-load-{pid}.sql"));
+    let cleanup = || {
+        let _ = std::fs::remove_file(&dump);
+        let _ = std::fs::remove_file(&load);
+    };
+
+    // 1) Dump dei soli dati della sorgente.
+    let mut cmd = Command::new(&pgd);
+    cmd.env("PGPASSWORD", &src.password)
+        .arg("-h").arg(&src.host).arg("-p").arg(src.port.to_string())
+        .arg("-U").arg(&src.user).arg("-d").arg(&src.database)
+        .arg("--data-only").arg("--disable-triggers")
+        .arg("-f").arg(&dump);
+    let display = format!(
+        "pg_dump -h {} -p {} -U {} -d {} --data-only --disable-triggers -f {}",
+        src.host, src.port, src.user, src.database, dump.display()
+    );
+    if !run(log, &display, &mut cmd)?.success {
+        cleanup();
+        return Err(Error::Cmd("pg_dump (data-only) ha segnalato un errore".into()));
+    }
+
+    // 2) Elenco delle tabelle public della sorgente (quote_ident le rende sicure).
+    let mut lc = Command::new(&psql);
+    lc.env("PGPASSWORD", &src.password)
+        .arg("-h").arg(&src.host).arg("-p").arg(src.port.to_string())
+        .arg("-U").arg(&src.user).arg("-d").arg(&src.database)
+        .arg("-tAc")
+        .arg("SELECT string_agg(format('%I', tablename), ',') FROM pg_tables WHERE schemaname='public'");
+    let listed = run(log, "psql (elenco tabelle public)", &mut lc)?;
+    if !listed.success {
+        cleanup();
+        return Err(Error::Cmd("psql non è riuscito a elencare le tabelle".into()));
+    }
+    let tables = listed.stdout.trim().to_string();
+
+    // 3) File di caricamento: disabilita i vincoli, TRUNCATE, poi i dati del dump.
+    let dump_sql = std::fs::read_to_string(&dump)?;
+    let mut load_sql = String::from("SET session_replication_role = replica;\n");
+    if !tables.is_empty() {
+        load_sql.push_str(&format!("TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE;\n"));
+    }
+    load_sql.push_str(&dump_sql);
+    std::fs::write(&load, &load_sql)?;
+
+    // 4) Caricamento sulla destinazione in un'unica transazione (rollback se fallisce).
+    let mut ic = Command::new(&psql);
+    ic.env("PGPASSWORD", &dst.password)
+        .arg("-h").arg(&dst.host).arg("-p").arg(dst.port.to_string())
+        .arg("-U").arg(&dst.user).arg("-d").arg(&dst.database)
+        .arg("--single-transaction").arg("-v").arg("ON_ERROR_STOP=1")
+        .arg("-f").arg(&load);
+    let display2 = format!(
+        "psql -h {} -p {} -U {} -d {} --single-transaction -f {} (TRUNCATE + dati)",
+        dst.host, dst.port, dst.user, dst.database, load.display()
+    );
+    let res = if run(log, &display2, &mut ic)?.success {
+        Ok(())
+    } else {
+        Err(Error::Cmd("psql (caricamento data-only) ha segnalato un errore".into()))
+    };
+    cleanup();
     res
 }
 
@@ -194,14 +280,19 @@ pub fn rust_import(conn: &Connection, input: &str, log: &mut Vec<String>) -> Res
     }
 }
 
-pub fn rust_clone(src: &Connection, dst: &Connection, log: &mut Vec<String>) -> Result<()> {
+pub fn rust_clone(
+    src: &Connection,
+    dst: &Connection,
+    opts: &CloneOptions,
+    log: &mut Vec<String>,
+) -> Result<()> {
     #[cfg(feature = "pg-driver")]
     {
-        return rustimpl::clone(src, dst, log);
+        return rustimpl::clone(src, dst, opts, log);
     }
     #[cfg(not(feature = "pg-driver"))]
     {
-        let _ = (src, dst, log);
+        let _ = (src, dst, opts, log);
         Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
     }
 }
@@ -222,6 +313,63 @@ pub fn rust_test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {
 mod rustimpl {
     use super::*;
     use serde_json::Value;
+    use std::collections::HashMap;
+
+    /// Mappa (tabella, colonna) → strategia di mascheramento.
+    type MaskMap = HashMap<(String, String), MaskStrategy>;
+
+    fn build_mask_map(opts: &CloneOptions) -> MaskMap {
+        opts.mask
+            .iter()
+            .map(|r| ((r.table.clone(), r.column.clone()), r.strategy.clone()))
+            .collect()
+    }
+
+    fn perr(e: tokio_postgres::Error) -> Error {
+        Error::Msg(e.to_string())
+    }
+
+    /// Hash deterministico (non crittografico) → esadecimale a 16 cifre.
+    fn hash_hex(s: &str) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        s.hash(&mut h);
+        format!("{:016x}", h.finish())
+    }
+
+    fn value_repr(v: &Value) -> String {
+        match v {
+            Value::String(s) => s.clone(),
+            Value::Null => String::new(),
+            other => other.to_string(),
+        }
+    }
+
+    /// Applica una strategia di mascheramento a un valore. I NULL restano NULL
+    /// (non si fabbricano dati dove non ce n'erano).
+    fn mask_value(strategy: &MaskStrategy, v: &Value) -> Value {
+        if v.is_null() {
+            return Value::Null;
+        }
+        match strategy {
+            MaskStrategy::Null => Value::Null,
+            MaskStrategy::Fixed { value } => Value::String(value.clone()),
+            MaskStrategy::Hash => Value::String(hash_hex(&value_repr(v))),
+            MaskStrategy::Email => Value::String(format!("user_{}@example.com", hash_hex(&value_repr(v)))),
+            MaskStrategy::Redact => {
+                let n = value_repr(v).chars().count().max(1);
+                Value::String("*".repeat(n))
+            }
+        }
+    }
+
+    /// Restituisce il valore, mascherato se c'è una regola per (tabella, colonna).
+    fn mask_col(mask: &MaskMap, table: &str, col: &str, v: &Value) -> Value {
+        match mask.get(&(table.to_string(), col.to_string())) {
+            Some(strategy) => mask_value(strategy, v),
+            None => v.clone(),
+        }
+    }
 
     fn runtime() -> Result<tokio::runtime::Runtime> {
         tokio::runtime::Builder::new_current_thread()
@@ -273,7 +421,7 @@ mod rustimpl {
         }
     }
 
-    async fn dump_sql(conn: &Connection) -> Result<String> {
+    async fn dump_sql(conn: &Connection, mask: &MaskMap) -> Result<String> {
         let client = connect(conn).await?;
         let qerr = |e: tokio_postgres::Error| Error::Msg(e.to_string());
 
@@ -338,7 +486,10 @@ mod rustimpl {
                 let row_json: Value = r.get(0);
                 let vals = col_names
                     .iter()
-                    .map(|n| lit(row_json.get(n).unwrap_or(&Value::Null)))
+                    .map(|n| {
+                        let v = row_json.get(n).cloned().unwrap_or(Value::Null);
+                        lit(&mask_col(mask, &table, n, &v))
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 out.push_str(&format!("INSERT INTO \"{table}\" ({collist}) VALUES ({vals});\n"));
@@ -350,7 +501,7 @@ mod rustimpl {
 
     pub fn dump(conn: &Connection, out: &str, log: &mut Vec<String>) -> Result<()> {
         log.push("Connessione con tokio-postgres…".into());
-        let sql = runtime()?.block_on(dump_sql(conn))?;
+        let sql = runtime()?.block_on(dump_sql(conn, &MaskMap::new()))?;
         std::fs::write(out, sql)?;
         log.push(format!("Dump SQL scritto in {out}"));
         Ok(())
@@ -370,19 +521,145 @@ mod rustimpl {
         Ok(())
     }
 
-    pub fn clone(src: &Connection, dst: &Connection, log: &mut Vec<String>) -> Result<()> {
+    pub fn clone(
+        src: &Connection,
+        dst: &Connection,
+        opts: &CloneOptions,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
         let rt = runtime()?;
-        log.push("Lettura schema+dati dalla sorgente…".into());
-        let sql = rt.block_on(dump_sql(src))?;
-        log.push("Scrittura sul database di destinazione…".into());
-        rt.block_on(async {
-            let client = connect(dst).await?;
-            client
-                .batch_execute(&sql)
-                .await
-                .map_err(|e| Error::Msg(e.to_string()))
-        })?;
+        let mask = build_mask_map(opts);
+        if !mask.is_empty() {
+            log.push(format!("Mascheramento attivo su {} colonna/e.", mask.len()));
+        }
+        if opts.data_only {
+            log.push("Modalità data-only: preservo lo schema della destinazione.".into());
+            rt.block_on(clone_data_only(src, dst, &mask, log))?;
+        } else {
+            log.push("Lettura schema+dati dalla sorgente…".into());
+            let sql = rt.block_on(dump_sql(src, &mask))?;
+            log.push("Scrittura sul database di destinazione (DROP + CREATE + dati)…".into());
+            rt.block_on(async {
+                let client = connect(dst).await?;
+                client.batch_execute(&sql).await.map_err(perr)
+            })?;
+        }
         log.push("Clonazione completata.".into());
+        Ok(())
+    }
+
+    /// Clone "solo dati": preserva lo schema della destinazione (gestito magari
+    /// da migration). Disabilita i vincoli, TRUNCATE le tabelle, reinserisce i
+    /// dati (mascherati se richiesto) e riallinea le sequenze. Tutto in una
+    /// transazione: se qualcosa fallisce, la destinazione resta invariata.
+    async fn clone_data_only(
+        src: &Connection,
+        dst: &Connection,
+        mask: &MaskMap,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        let s = connect(src).await?;
+        let mut d = connect(dst).await?;
+
+        let trows = s
+            .query(
+                "SELECT table_name FROM information_schema.tables \
+                 WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name",
+                &[],
+            )
+            .await
+            .map_err(perr)?;
+        let tables: Vec<String> = trows.iter().map(|r| r.get::<_, String>(0)).collect();
+        if tables.is_empty() {
+            return Err(Error::Msg("nessuna tabella 'public' nella sorgente".into()));
+        }
+
+        let tx = d.transaction().await.map_err(|e| Error::Conn(e.to_string()))?;
+        // Disabilita i trigger/vincoli FK per il travaso (richiede superuser).
+        // Best-effort: se non abbiamo il permesso proseguiamo comunque.
+        let _ = tx.batch_execute("SET session_replication_role = replica").await;
+
+        let tlist = tables
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        tx.batch_execute(&format!("TRUNCATE TABLE {tlist} RESTART IDENTITY CASCADE"))
+            .await
+            .map_err(|e| Error::Msg(format!("TRUNCATE: {e}")))?;
+
+        let mut total = 0usize;
+        for table in &tables {
+            let cols = s
+                .query(
+                    "SELECT column_name FROM information_schema.columns \
+                     WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position",
+                    &[table],
+                )
+                .await
+                .map_err(perr)?;
+            let col_names: Vec<String> = cols.iter().map(|c| c.get::<_, String>(0)).collect();
+            if col_names.is_empty() {
+                continue;
+            }
+            let collist = col_names
+                .iter()
+                .map(|n| format!("\"{n}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let rows = s
+                .query(format!("SELECT to_json(t) FROM \"{table}\" t").as_str(), &[])
+                .await
+                .map_err(perr)?;
+            if rows.is_empty() {
+                continue;
+            }
+            let mut sql = String::new();
+            for r in &rows {
+                let row_json: Value = r.get(0);
+                let vals = col_names
+                    .iter()
+                    .map(|n| {
+                        let v = row_json.get(n).cloned().unwrap_or(Value::Null);
+                        lit(&mask_col(mask, table, n, &v))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                sql.push_str(&format!("INSERT INTO \"{table}\" ({collist}) VALUES ({vals});\n"));
+            }
+            tx.batch_execute(&sql)
+                .await
+                .map_err(|e| Error::Msg(format!("INSERT in {table}: {e}")))?;
+            total += rows.len();
+            log.push(format!("  {table}: {} righe", rows.len()));
+        }
+
+        // Riallinea le sequenze identity/serial al massimo valore inserito.
+        let seqrows = tx
+            .query(
+                "SELECT table_name, column_name, pg_get_serial_sequence(quote_ident(table_name), column_name) \
+                 FROM information_schema.columns \
+                 WHERE table_schema='public' AND table_name = ANY($1)",
+                &[&tables],
+            )
+            .await
+            .map_err(perr)?;
+        for r in &seqrows {
+            let seq: Option<String> = r.get(2);
+            if let Some(seq) = seq {
+                let table: String = r.get(0);
+                let col: String = r.get(1);
+                let q = format!(
+                    "SELECT setval('{seq}', (SELECT COALESCE(MAX(\"{col}\"), 1) FROM \"{table}\"))"
+                );
+                tx.batch_execute(&q)
+                    .await
+                    .map_err(|e| Error::Msg(format!("setval {seq}: {e}")))?;
+            }
+        }
+
+        tx.commit().await.map_err(|e| Error::Msg(format!("commit: {e}")))?;
+        log.push(format!("Totale righe copiate: {total}"));
         Ok(())
     }
 

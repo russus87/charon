@@ -14,6 +14,17 @@ use crate::{Error, Result};
 use std::path::Path;
 use std::process::Command;
 
+/// Data-only e masking non sono ancora implementati per Oracle: lo diciamo
+/// chiaramente invece di ignorare l'opzione in silenzio.
+fn reject_unsupported_opts(opts: &CloneOptions) -> Result<()> {
+    if opts.data_only || opts.has_mask() {
+        return Err(Error::Unsupported(
+            "data-only e mascheramento sono al momento disponibili solo per PostgreSQL".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Stringa di connessione Oracle `user/pass@host:port/service`.
 fn conn_str(conn: &Connection) -> String {
     format!(
@@ -239,7 +250,13 @@ pub fn native_import(conn: &Connection, input: &str, log: &mut Vec<String>) -> R
     }
 }
 
-pub fn native_clone(src: &Connection, dst: &Connection, log: &mut Vec<String>) -> Result<()> {
+pub fn native_clone(
+    src: &Connection,
+    dst: &Connection,
+    opts: &CloneOptions,
+    log: &mut Vec<String>,
+) -> Result<()> {
+    reject_unsupported_opts(opts)?;
     let file = format!("charon-clone-{}.dmp", std::process::id());
     log.push(format!("Dump Data Pump della sorgente ({file})"));
     native_dump(src, &file, log)?;
@@ -326,7 +343,13 @@ pub fn rust_import(conn: &Connection, input: &str, log: &mut Vec<String>) -> Res
         Err(no_driver())
     }
 }
-pub fn rust_clone(src: &Connection, dst: &Connection, log: &mut Vec<String>) -> Result<()> {
+pub fn rust_clone(
+    src: &Connection,
+    dst: &Connection,
+    opts: &CloneOptions,
+    log: &mut Vec<String>,
+) -> Result<()> {
+    reject_unsupported_opts(opts)?;
     #[cfg(feature = "oracle-driver")]
     {
         return rustimpl::clone(src, dst, log);

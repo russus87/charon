@@ -45,6 +45,52 @@ pub struct Connection {
     pub password: String,
 }
 
+/// Strategia di mascheramento di una colonna, per il clone sicuro prod→test.
+///
+/// Il masking si applica solo lato **puro Rust** (SELECT→trasforma→INSERT):
+/// i tool nativi non possono riscrivere i valori al volo.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum MaskStrategy {
+    /// Sostituisce il valore con NULL.
+    Null,
+    /// Sostituisce con un valore fisso.
+    Fixed { value: String },
+    /// Pseudonimizza in modo deterministico (hash → esadecimale).
+    Hash,
+    /// Rimpiazza con un indirizzo email fittizio ma deterministico.
+    Email,
+    /// Offusca mantenendo la lunghezza (stringa di asterischi).
+    Redact,
+}
+
+/// Regola di mascheramento: quale colonna di quale tabella trasformare, e come.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaskRule {
+    pub table: String,
+    pub column: String,
+    pub strategy: MaskStrategy,
+}
+
+/// Opzioni per la clonazione.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CloneOptions {
+    /// Se `true`, preserva lo schema della destinazione: non fa DROP/CREATE ma
+    /// TRUNCATE + inserimento dati (adatto a schemi gestiti da migration).
+    #[serde(default)]
+    pub data_only: bool,
+    /// Regole di mascheramento da applicare durante il travaso (forza il puro Rust).
+    #[serde(default)]
+    pub mask: Vec<MaskRule>,
+}
+
+impl CloneOptions {
+    /// `true` se ci sono regole di mascheramento attive.
+    pub fn has_mask(&self) -> bool {
+        !self.mask.is_empty()
+    }
+}
+
 /// Come e' stata (o deve essere) eseguita l'operazione.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

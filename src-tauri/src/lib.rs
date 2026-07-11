@@ -4,7 +4,7 @@
 //! l'orchestratore del core e restituisce un `OpResult` (gia' serializzabile),
 //! che riporta SEMPRE quale metodo (nativo o puro Rust) e' stato usato.
 
-use charon_core::model::{Connection, EngineReport, OpResult, Prefer};
+use charon_core::model::{CloneOptions, Connection, EngineReport, OpResult, Prefer};
 use charon_core::ops;
 
 /// Elenco, per ogni motore, dei tool nativi trovati e dei metodi disponibili.
@@ -31,10 +31,15 @@ fn import_dump(conn: Connection, input: String, prefer: Prefer) -> OpResult {
     ops::import(&conn, &input, prefer)
 }
 
-/// Clona il database `source` su `target`.
+/// Clona il database `source` su `target` con le opzioni date (data-only, masking).
 #[tauri::command]
-fn clone_database(source: Connection, target: Connection, prefer: Prefer) -> OpResult {
-    ops::clone(&source, &target, prefer)
+fn clone_database(
+    source: Connection,
+    target: Connection,
+    prefer: Prefer,
+    options: CloneOptions,
+) -> OpResult {
+    ops::clone(&source, &target, prefer, &options)
 }
 
 /// Punto di ingresso dell'app Tauri.

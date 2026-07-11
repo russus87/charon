@@ -13,6 +13,12 @@ Motori supportati: **PostgreSQL**, **Oracle**, **SQL Server**.
 - **Dump** — esporta un database su file.
 - **Importa** — carica un dump dentro un database.
 - **Clona** — copia schema + dati da un database sorgente a uno di destinazione.
+  - **Solo dati** (data-only) — preserva lo schema della destinazione (TRUNCATE +
+    dati, sequenze riallineate): ideale per schemi gestiti da migration
+    (Liquibase/Flyway). *PostgreSQL.*
+  - **Mascheramento** — anonimizza colonne sensibili durante il travaso
+    (hash, email fittizia, offuscamento, NULL, valore fisso): sicuro per copiare
+    **prod→test**. *PostgreSQL, via metodo puro Rust.*
 - **Strumenti** — mostra quali tool nativi sono installati e quale metodo verrà usato.
 
 ## Strategia ibrida (nativo + puro Rust)

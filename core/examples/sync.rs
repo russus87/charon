@@ -14,11 +14,38 @@
 //!
 //! Il metodo è sempre Prefer::Auto (nativo se presente, altrimenti puro Rust).
 
-use charon_core::model::{CloneOptions, Connection, Engine, MaskRule, MaskStrategy, Prefer};
+use charon_core::model::{
+    CloneOptions, Connection, Engine, MaskRule, MaskStrategy, Prefer, SshAuth, SshTunnel,
+};
 use charon_core::ops;
 
 fn env(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn opt_env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|s| !s.is_empty())
+}
+
+/// Costruisce il tunnel SSH da {prefix}_SSH_HOST/PORT/USER + PASS oppure KEY.
+fn ssh(prefix: &str) -> Option<SshTunnel> {
+    let host = opt_env(&format!("{prefix}_SSH_HOST"))?;
+    let auth = if let Some(key) = opt_env(&format!("{prefix}_SSH_KEY")) {
+        SshAuth::Key {
+            path: key,
+            passphrase: env(&format!("{prefix}_SSH_KEYPASS"), ""),
+        }
+    } else {
+        SshAuth::Password {
+            password: env(&format!("{prefix}_SSH_PASS"), ""),
+        }
+    };
+    Some(SshTunnel {
+        host,
+        port: env(&format!("{prefix}_SSH_PORT"), "22").parse().unwrap_or(22),
+        user: env(&format!("{prefix}_SSH_USER"), "root"),
+        auth,
+    })
 }
 
 fn conn(prefix: &str) -> Connection {
@@ -29,6 +56,7 @@ fn conn(prefix: &str) -> Connection {
         database: env(&format!("{prefix}_DB"), "postgres"),
         user: env(&format!("{prefix}_USER"), "postgres"),
         password: env(&format!("{prefix}_PASS"), ""),
+        ssh: ssh(prefix),
     }
 }
 

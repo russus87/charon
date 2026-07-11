@@ -4,14 +4,16 @@
 # tramite i driver (best-effort). Vedi README per i dettagli.
 [package]
 name = "charon-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [features]
-# Il fallback puro Rust per Postgres e SQL Server e' attivo di default.
-default = ["pg-driver", "mssql-driver"]
+# Fallback puro Rust (Postgres/SQL Server) e tunnel SSH: attivi di default.
+default = ["pg-driver", "mssql-driver", "ssh-tunnel"]
 pg-driver = ["dep:tokio-postgres"]
 mssql-driver = ["dep:tiberius", "dep:tokio-util", "dep:futures-util"]
+# Tunnel SSH puro Rust (nessun binario ssh esterno richiesto).
+ssh-tunnel = ["dep:russh"]
 # Il driver Oracle (crate `oracle`/ODPI-C). COMPILARLO non richiede l'Instant
 # Client (ODPI-C lo carica con dlopen a RUNTIME): quindi e' attivabile anche in
 # CI. Off di default solo per tenere veloce la build di sviluppo; le release lo
@@ -37,6 +39,9 @@ futures-util = { version = "0.3", optional = true }
 
 # --- Fallback Oracle (opzionale, richiede Instant Client) ---
 oracle = { version = "0.6", optional = true }
+
+# --- Tunnel SSH puro Rust ---
+russh = { version = "0.54", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

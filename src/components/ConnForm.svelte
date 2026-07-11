@@ -1,5 +1,5 @@
 <script>
-  import { setEngine } from "../lib/state.svelte.js";
+  import { setEngine, toggleSsh } from "../lib/state.svelte.js";
 
   // `conn` e' l'oggetto reattivo dello stato: mutarne i campi aggiorna tutto.
   let { conn, title = "Connessione" } = $props();
@@ -52,6 +52,55 @@
       <input type="password" bind:value={conn.password} autocomplete="off" />
     </label>
   </div>
+
+  <!-- Tunnel SSH opzionale (bastion) -->
+  <label class="ssh-toggle">
+    <input type="checkbox" checked={!!conn.ssh} onchange={() => toggleSsh(conn)} />
+    <span>Tunnel SSH (host/porta risolti dal lato del server SSH)</span>
+  </label>
+
+  {#if conn.ssh}
+    <div class="grid ssh">
+      <label class="wide">
+        <span>SSH host</span>
+        <input bind:value={conn.ssh.host} placeholder="bastion.example.com" autocomplete="off" />
+      </label>
+      <label>
+        <span>SSH porta</span>
+        <input type="number" bind:value={conn.ssh.port} />
+      </label>
+      <label>
+        <span>SSH utente</span>
+        <input bind:value={conn.ssh.user} autocomplete="off" />
+      </label>
+      <label>
+        <span>Autenticazione</span>
+        <select bind:value={conn.ssh.auth.kind}>
+          <option value="password">Password</option>
+          <option value="key">Chiave privata</option>
+          <option value="agent">ssh-agent</option>
+        </select>
+      </label>
+
+      {#if conn.ssh.auth.kind === "password"}
+        <label>
+          <span>SSH password</span>
+          <input type="password" bind:value={conn.ssh.auth.password} autocomplete="off" />
+        </label>
+      {:else if conn.ssh.auth.kind === "key"}
+        <label class="wide">
+          <span>Percorso chiave privata</span>
+          <input bind:value={conn.ssh.auth.path} placeholder="~/.ssh/id_ed25519" autocomplete="off" />
+        </label>
+        <label class="wide">
+          <span>Passphrase (se presente)</span>
+          <input type="password" bind:value={conn.ssh.auth.passphrase} autocomplete="off" />
+        </label>
+      {:else}
+        <p class="agent-note">Verranno usate le identità dell'ssh-agent di sistema.</p>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -110,7 +159,8 @@
     font-weight: 600;
     color: var(--ink-soft);
   }
-  input {
+  input,
+  select {
     border: 1px solid var(--stroke);
     background: var(--bg-2);
     border-radius: 10px;
@@ -119,9 +169,34 @@
     color: var(--ink);
     transition: border 0.15s ease, box-shadow 0.15s ease;
   }
-  input:focus {
+  input:focus,
+  select:focus {
     outline: none;
     border-color: var(--brand);
     box-shadow: 0 0 0 3px var(--brand-soft);
+  }
+  .ssh-toggle {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    cursor: pointer;
+  }
+  .ssh-toggle input {
+    width: auto;
+  }
+  .grid.ssh {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--stroke);
+  }
+  .agent-note {
+    grid-column: span 2;
+    margin: 0;
+    font-size: 12px;
+    color: var(--ink-soft);
   }
 </style>

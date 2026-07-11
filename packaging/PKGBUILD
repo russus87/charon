@@ -2,7 +2,7 @@
 # Pensato per la CI: la versione viene iniettata da release.yml (sed su pkgver).
 # Compila dal sorgente gia' presente nel repo e impacchetta il binario.
 pkgname=charon
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Dump, import e clonazione di database: PostgreSQL, Oracle, SQL Server (Rust + Tauri + Svelte)"
 arch=('x86_64')

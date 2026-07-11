@@ -18,7 +18,21 @@ function blankConn(engine = "postgres") {
     database: "",
     user: "",
     password: "",
+    ssh: null, // tunnel SSH opzionale (vedi toggleSsh)
   };
+}
+
+// Attiva/disattiva il tunnel SSH su una connessione. L'oggetto auth tiene tutti
+// i campi: il backend (serde) ignora quelli non pertinenti alla strategia scelta.
+export function toggleSsh(conn) {
+  conn.ssh = conn.ssh
+    ? null
+    : {
+        host: "",
+        port: 22,
+        user: "",
+        auth: { kind: "password", password: "", path: "", passphrase: "" },
+      };
 }
 
 export const app = $state({

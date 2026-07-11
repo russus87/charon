@@ -31,6 +31,45 @@ impl Engine {
     }
 }
 
+/// Come autenticarsi al server SSH del tunnel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum SshAuth {
+    /// Password dell'utente SSH.
+    Password { password: String },
+    /// Chiave privata su file (con eventuale passphrase).
+    Key {
+        path: String,
+        #[serde(default)]
+        passphrase: String,
+    },
+    /// Agent SSH del sistema (ssh-agent).
+    Agent,
+}
+
+impl Default for SshAuth {
+    fn default() -> Self {
+        SshAuth::Agent
+    }
+}
+
+fn default_ssh_port() -> u16 {
+    22
+}
+
+/// Tunnel SSH: Charon apre un port-forward locale verso il DB passando dal
+/// server SSH (bastion). `host`/`port` del [`Connection`] sono risolti **dal
+/// lato del server SSH** (tipicamente `localhost:5432` sul bastion).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshTunnel {
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    pub user: String,
+    #[serde(default)]
+    pub auth: SshAuth,
+}
+
 /// Parametri di connessione a un database.
 ///
 /// Per Oracle `database` rappresenta il *service name* (es. `XEPDB1`).
@@ -43,6 +82,9 @@ pub struct Connection {
     pub user: String,
     #[serde(default)]
     pub password: String,
+    /// Se presente, la connessione passa da un tunnel SSH.
+    #[serde(default)]
+    pub ssh: Option<SshTunnel>,
 }
 
 /// Strategia di mascheramento di una colonna, per il clone sicuro prod→test.

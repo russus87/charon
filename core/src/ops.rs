@@ -2,7 +2,7 @@
 //! verso il motore giusto. E' l'unico punto che la UI deve conoscere.
 
 use crate::model::*;
-use crate::{mssql, oracle, postgres, Error, Result};
+use crate::{mssql, oracle, postgres, tunnel, Error, Result};
 
 /// Riepilogo di cosa e' disponibile sulla macchina, per tutti i motori.
 pub fn detect_all() -> Vec<EngineReport> {
@@ -137,13 +137,52 @@ fn dispatch_test(conn: &Connection, m: Method, log: &mut Vec<String>) -> Result<
     }
 }
 
+/// Se la connessione usa un tunnel SSH, lo apre e restituisce una connessione
+/// "effettiva" che punta al forward locale (più la guardia da tenere viva).
+/// Senza SSH, ritorna la connessione invariata.
+fn prepare(conn: &Connection) -> Result<(Connection, Option<tunnel::TunnelGuard>)> {
+    if conn.ssh.is_none() {
+        return Ok((conn.clone(), None));
+    }
+    #[cfg(feature = "ssh-tunnel")]
+    {
+        let guard = tunnel::open(conn)?;
+        let mut eff = conn.clone();
+        eff.host = guard.local_host.clone();
+        eff.port = guard.local_port;
+        eff.ssh = None;
+        Ok((eff, Some(guard)))
+    }
+    #[cfg(not(feature = "ssh-tunnel"))]
+    {
+        Err(Error::Unsupported(
+            "supporto SSH non compilato in questa build".into(),
+        ))
+    }
+}
+
+/// OpResult di errore "precoce" (es. tunnel non apribile), prima di scegliere il metodo.
+fn early_error(e: Error) -> OpResult {
+    OpResult {
+        ok: false,
+        method: Method::Native,
+        message: e.to_string(),
+        artifact: None,
+        log: Vec::new(),
+    }
+}
+
 /// Crea un dump del database in `out`.
 pub fn dump(conn: &Connection, out: &str, prefer: Prefer) -> OpResult {
+    let (conn, _guard) = match prepare(conn) {
+        Ok(x) => x,
+        Err(e) => return early_error(e),
+    };
     let res = finalize(
         conn.engine,
         prefer,
         format!("Dump completato → {out}"),
-        |m, log| dispatch_dump(conn, out, m, log),
+        |m, log| dispatch_dump(&conn, out, m, log),
     );
     if res.ok {
         res.with_artifact(out)
@@ -154,11 +193,15 @@ pub fn dump(conn: &Connection, out: &str, prefer: Prefer) -> OpResult {
 
 /// Importa un dump `input` nel database.
 pub fn import(conn: &Connection, input: &str, prefer: Prefer) -> OpResult {
+    let (conn, _guard) = match prepare(conn) {
+        Ok(x) => x,
+        Err(e) => return early_error(e),
+    };
     finalize(
         conn.engine,
         prefer,
         "Import completato".into(),
-        |m, log| dispatch_import(conn, input, m, log),
+        |m, log| dispatch_import(&conn, input, m, log),
     )
 }
 
@@ -173,6 +216,15 @@ pub fn clone(src: &Connection, dst: &Connection, prefer: Prefer, opts: &CloneOpt
             log: Vec::new(),
         };
     }
+    // Apre i tunnel SSH (se configurati) per sorgente e destinazione.
+    let (src, _gs) = match prepare(src) {
+        Ok(x) => x,
+        Err(e) => return early_error(e),
+    };
+    let (dst, _gd) = match prepare(dst) {
+        Ok(x) => x,
+        Err(e) => return early_error(e),
+    };
     // Il mascheramento riscrive i valori riga per riga: possibile solo col puro
     // Rust. Se richiesto, forziamo quel metodo a prescindere dalla preferenza.
     let effective = if opts.has_mask() { Prefer::Rust } else { prefer };
@@ -186,17 +238,21 @@ pub fn clone(src: &Connection, dst: &Connection, prefer: Prefer, opts: &CloneOpt
                     "il mascheramento richiede il metodo puro Rust".into(),
                 ));
             }
-            dispatch_clone(src, dst, m, opts, log)
+            dispatch_clone(&src, &dst, m, opts, log)
         },
     )
 }
 
 /// Verifica la connessione al database.
 pub fn test_connection(conn: &Connection, prefer: Prefer) -> OpResult {
+    let (conn, _guard) = match prepare(conn) {
+        Ok(x) => x,
+        Err(e) => return early_error(e),
+    };
     finalize(
         conn.engine,
         prefer,
         "Connessione riuscita".into(),
-        |m, log| dispatch_test(conn, m, log),
+        |m, log| dispatch_test(&conn, m, log),
     )
 }

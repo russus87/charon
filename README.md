@@ -21,6 +21,10 @@ Motori supportati: **PostgreSQL**, **Oracle**, **SQL Server**.
     **prod→test**. *PostgreSQL, via metodo puro Rust.*
 - **Strumenti** — mostra quali tool nativi sono installati e quale metodo verrà usato.
 
+Ogni connessione (dump/import/clone/test) può passare da un **tunnel SSH** integrato
+(bastion), in **puro Rust** (crate `russh`, nessun binario `ssh` esterno): host e porta
+del DB sono risolti dal lato del server SSH. Auth con **password** o **chiave privata**.
+
 ## Strategia ibrida (nativo + puro Rust)
 
 Per ogni operazione Charon sceglie automaticamente (oppure puoi forzare dal selettore

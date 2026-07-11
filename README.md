@@ -24,7 +24,7 @@ Per ogni operazione Charon sceglie automaticamente (oppure puoi forzare dal sele
 |---|---|---|
 | **PostgreSQL** | `pg_dump`, `pg_restore`, `psql` | ✅ `tokio-postgres` — dump SQL best-effort |
 | **SQL Server** | `mssql-scripter`, `sqlcmd`, `bcp` | ✅ `tiberius` — dump SQL best-effort (via `FOR JSON`) |
-| **Oracle** | `expdp`, `impdp`, `sqlplus` (Data Pump) | ⚠️ solo con la feature `oracle-driver` (richiede Instant Client) |
+| **Oracle** | `expdp`, `impdp`, `sqlplus` (Data Pump) | ✅ crate `oracle` — dump/clone client-side (richiede **Instant Client** a runtime) |
 
 Il pannello **Console** indica sempre **quale metodo è stato usato** (tool nativi o
 fallback puro Rust) e mostra i comandi eseguiti e l'output del database.
@@ -36,8 +36,12 @@ fallback puro Rust) e mostra i comandi eseguiti e l'output del database.
   permessi, tipi custom) usa i **tool nativi**.
 - **Oracle Data Pump** (`expdp`/`impdp`) opera **lato server**: il dumpfile viene
   creato nella directory logica `DATA_PUMP_DIR` del server, non in locale.
-- Il driver Oracle puro Rust (crate `oracle`) richiede l'**Oracle Instant Client** in
-  fase di link, quindi non è incluso nelle build CI: per Oracle servono i tool nativi.
+- Il driver Oracle (crate `oracle`/ODPI-C) è **incluso nei pacchetti di release**:
+  compilarlo non richiede l'Instant Client. Serve però l'**Oracle Instant Client**
+  *a runtime* (sole librerie, nessun compilatore). Se manca, la schermata
+  **Strumenti** mostra il pulsante **"i"** con le istruzioni per installarlo. Il
+  path Oracle puro-Rust lavora **lato client** (SELECT→INSERT): ideale per la
+  migrazione src→dst, senza `DATA_PUMP_DIR` né accesso DBA.
 
 ## Struttura
 

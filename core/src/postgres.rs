@@ -47,6 +47,30 @@ pub fn report() -> EngineReport {
     } else {
         "Nessun metodo disponibile.".into()
     };
+    let mut hints = Vec::new();
+    if !native {
+        hints.push(FixHint::new(
+            "Installa il client PostgreSQL",
+            "I tool nativi (pg_dump, pg_restore, psql) danno la fedeltà massima \
+             (indici, vincoli, sequenze, permessi). Senza, Charon usa il fallback \
+             puro Rust che esporta solo schema essenziale + dati. Installa il client:",
+            Some(
+                "Arch:           sudo pacman -S postgresql\n\
+                 Debian/Ubuntu:  sudo apt install postgresql-client\n\
+                 Fedora:         sudo dnf install postgresql\n\
+                 macOS:          brew install libpq && brew link --force libpq\n\
+                 Windows:        installa \"PostgreSQL\" da enterprisedb.com",
+            ),
+        ));
+    }
+    if !native && !rust {
+        hints.push(FixHint::new(
+            "Nessun metodo disponibile",
+            "Mancano sia i tool nativi sia il fallback puro Rust. Ricompila Charon \
+             con la feature 'pg-driver' (attiva di default) oppure installa il client.",
+            None,
+        ));
+    }
     EngineReport {
         engine: Engine::Postgres,
         label: Engine::Postgres.label().into(),
@@ -54,6 +78,7 @@ pub fn report() -> EngineReport {
         native_available: native,
         rust_available: rust,
         note,
+        hints,
     }
 }
 

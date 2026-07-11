@@ -15,12 +15,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest      # Mac Apple Silicon
-            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest      # Mac Apple Silicon (M1-M5). Niente build Intel.
+            args: "--target aarch64-apple-darwin --features oracle"
           - platform: ubuntu-22.04      # Linux (.deb, .rpm, .AppImage)
-            args: ""
+            args: "--features oracle"
           - platform: windows-latest    # Windows (.exe NSIS, .msi)
-            args: ""
+            args: "--features oracle"
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +49,8 @@ jobs:
       - name: Installa dipendenze frontend
         run: npm install
 
+      # --features oracle: include il driver Oracle (ODPI-C, C vendored). Compilarlo
+      # NON richiede l'Instant Client, che serve solo a runtime lato utente.
       - name: Build + bundle + release
         uses: tauri-apps/tauri-action@v0
         env:

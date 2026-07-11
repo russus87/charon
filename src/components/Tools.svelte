@@ -1,5 +1,9 @@
 <script>
   import { app, loadReports } from "../lib/state.svelte.js";
+
+  // Indice della card con il pannello "come risolvere" aperto (null = nessuno).
+  let openHelp = $state(null);
+  const toggleHelp = (i) => (openHelp = openHelp === i ? null : i);
 </script>
 
 <div class="tools">
@@ -16,10 +20,21 @@
   </div>
 
   <div class="cards">
-    {#each app.reports as r}
-      <div class="card eng">
+    {#each app.reports as r, i}
+      <div class="card eng" class:hasproblem={r.hints?.length}>
         <div class="eng-head">
-          <h3>{r.label}</h3>
+          <h3>
+            {r.label}
+            {#if r.hints?.length}
+              <button
+                class="ibtn"
+                aria-label="Come risolvere"
+                aria-expanded={openHelp === i}
+                title="Come risolvere ({r.hints.length})"
+                onclick={() => toggleHelp(i)}
+              >i</button>
+            {/if}
+          </h3>
           <div class="flags">
             <span class="badge {r.native_available ? 'ok' : 'err'}">
               nativo {r.native_available ? "✓" : "✗"}
@@ -29,6 +44,24 @@
             </span>
           </div>
         </div>
+
+        {#if openHelp === i && r.hints?.length}
+          <div class="help">
+            <div class="help-head">
+              <strong>Come risolvere</strong>
+              <button class="xbtn" aria-label="Chiudi" onclick={() => toggleHelp(i)}>✕</button>
+            </div>
+            {#each r.hints as h}
+              <div class="hint">
+                <div class="hint-title">{h.title}</div>
+                <p class="hint-body">{h.body}</p>
+                {#if h.command}
+                  <pre class="hint-cmd">{h.command}</pre>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
 
         <ul class="tlist">
           {#each r.tools as t}
@@ -93,6 +126,78 @@
   .eng-head h3 {
     margin: 0;
     font-size: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .eng.hasproblem {
+    border-color: color-mix(in srgb, var(--err) 45%, transparent);
+  }
+  .ibtn {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: none;
+    background: var(--err);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    font-style: italic;
+    line-height: 18px;
+    text-align: center;
+    cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+  }
+  .ibtn:hover {
+    filter: brightness(1.1);
+  }
+  .help {
+    background: var(--surface-2);
+    border: 1px solid color-mix(in srgb, var(--err) 35%, transparent);
+    border-radius: 12px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .help-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+  }
+  .xbtn {
+    border: none;
+    background: transparent;
+    color: var(--ink-soft);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 2px 4px;
+  }
+  .hint-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 4px;
+  }
+  .hint-body {
+    margin: 0 0 8px;
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    line-height: 1.5;
+  }
+  .hint-cmd {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--border, rgba(127, 127, 127, 0.18));
+    border-radius: 8px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    white-space: pre;
   }
   .flags {
     display: flex;

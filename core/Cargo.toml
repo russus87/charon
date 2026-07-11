@@ -12,9 +12,11 @@ edition = "2021"
 default = ["pg-driver", "mssql-driver"]
 pg-driver = ["dep:tokio-postgres"]
 mssql-driver = ["dep:tiberius", "dep:tokio-util", "dep:futures-util"]
-# Il driver Oracle (crate `oracle`) richiede l'Oracle Instant Client in fase di
-# link: NON e' attivabile nelle build CI standard. Off di default: per Oracle si
-# usano i tool nativi (expdp/impdp/sqlplus). Attivalo solo in locale se hai il client.
+# Il driver Oracle (crate `oracle`/ODPI-C). COMPILARLO non richiede l'Instant
+# Client (ODPI-C lo carica con dlopen a RUNTIME): quindi e' attivabile anche in
+# CI. Off di default solo per tenere veloce la build di sviluppo; le release lo
+# attivano via la feature `oracle` del crate Tauri. A runtime serve l'Instant
+# Client, altrimenti la UI mostra le istruzioni per installarlo.
 oracle-driver = ["dep:oracle"]
 
 [dependencies]

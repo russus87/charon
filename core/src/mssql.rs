@@ -52,6 +52,34 @@ pub fn report() -> EngineReport {
     } else {
         "Nessun metodo disponibile.".into()
     };
+    let mut hints = Vec::new();
+    if !has_tool("mssql-scripter") {
+        hints.push(FixHint::new(
+            "Installa mssql-scripter (per il dump)",
+            "Genera il dump schema+dati ad alta fedeltà. È un tool Python ufficiale Microsoft:",
+            Some("pip install mssql-scripter"),
+        ));
+    }
+    if !has_tool("sqlcmd") {
+        hints.push(FixHint::new(
+            "Installa sqlcmd (per l'import)",
+            "Esegue gli script SQL sul database. Fa parte degli 'mssql-tools' di Microsoft:",
+            Some(
+                "Arch (AUR):     yay -S mssql-tools\n\
+                 Debian/Ubuntu:  segui https://learn.microsoft.com/sql/tools/sqlcmd-utility\n\
+                 macOS:          brew install microsoft/mssql-release/mssql-tools\n\
+                 Windows:        incluso in \"SQL Server Command Line Utilities\"",
+            ),
+        ));
+    }
+    if !native && !rust {
+        hints.push(FixHint::new(
+            "Nessun metodo disponibile",
+            "Mancano i tool nativi e il fallback puro Rust. Ricompila con la feature \
+             'mssql-driver' (attiva di default) oppure installa i tool sopra.",
+            None,
+        ));
+    }
     EngineReport {
         engine: Engine::Sqlserver,
         label: Engine::Sqlserver.label().into(),
@@ -59,6 +87,7 @@ pub fn report() -> EngineReport {
         native_available: native,
         rust_available: rust,
         note,
+        hints,
     }
 }
 

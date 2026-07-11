@@ -14,6 +14,8 @@ makedepends=('rust' 'cargo' 'nodejs' 'npm')
 optdepends=(
     'postgresql-libs: tool nativi pg_dump/psql per PostgreSQL'
     'mssql-tools: sqlcmd/bcp per SQL Server'
+    'oracle-instantclient-basic: driver Oracle a runtime (migrazione client-side)'
+    'oracle-instantclient-tools: expdp/impdp per Oracle Data Pump (opzionale)'
 )
 options=('!strip' '!lto')
 
@@ -25,7 +27,8 @@ build() {
     npm install
     # Si compila con la CLI di Tauri (modalita' produzione, frontend incorporato).
     # --no-bundle: niente installer, il pacchetto lo fa makepkg.
-    npm run tauri build -- --no-bundle
+    # --features oracle: include il driver Oracle (Instant Client serve solo a runtime).
+    npm run tauri build -- --no-bundle --features oracle
 }
 
 package() {

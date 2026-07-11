@@ -86,6 +86,29 @@ pub struct ToolInfo {
     pub purpose: String,
 }
 
+/// Suggerimento per risolvere un problema rilevato su un motore.
+///
+/// Mostrato in UI dietro al pulsante "i" quando qualcosa non e' disponibile.
+#[derive(Debug, Clone, Serialize)]
+pub struct FixHint {
+    /// Titolo breve del problema.
+    pub title: String,
+    /// Spiegazione e come risolverlo.
+    pub body: String,
+    /// Comando/i consigliati da copiare (opzionale), reso come blocco monospace.
+    pub command: Option<String>,
+}
+
+impl FixHint {
+    pub fn new(title: impl Into<String>, body: impl Into<String>, command: Option<&str>) -> Self {
+        FixHint {
+            title: title.into(),
+            body: body.into(),
+            command: command.map(|s| s.to_string()),
+        }
+    }
+}
+
 /// Riepilogo, per un motore, di cosa e' disponibile sulla macchina.
 #[derive(Debug, Clone, Serialize)]
 pub struct EngineReport {
@@ -98,6 +121,8 @@ pub struct EngineReport {
     pub rust_available: bool,
     /// Nota esplicativa per l'utente.
     pub note: String,
+    /// Problemi rilevati + come risolverli (vuoto se va tutto bene).
+    pub hints: Vec<FixHint>,
 }
 
 /// Esito di un'operazione (dump/import/clone/test).

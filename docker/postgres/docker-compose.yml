@@ -1,0 +1,25 @@
+# DB Postgres "usa e getta" per provare Charon senza client nativi installati.
+# Un solo container con tre database:
+#   charon_src   sorgente, popolato dal seed (init.sql)
+#   charon_dst   destinazione data-only: stesso schema, nessun dato (per il clone
+#                che preserva lo schema + mascheramento + riallineo sequenze)
+#   charon_full  destinazione del clone "pieno" (DROP+CREATE+dati), inizialmente vuoto
+#
+# Porta host 55432 per non collidere con un eventuale Postgres locale.
+services:
+  charon-pg:
+    image: postgres:16-alpine
+    container_name: charon-pg
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app_pw
+      POSTGRES_DB: charon_src
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d charon_src"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

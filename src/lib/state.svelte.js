@@ -1,4 +1,5 @@
 // Stato globale dell'app (runes Svelte 5). Un solo oggetto reattivo condiviso.
+import { listen } from "@tauri-apps/api/event";
 import {
   detectTools,
   testConnection,
@@ -41,9 +42,11 @@ export const app = $state({
   conn: blankConn(), // connessione principale (dump/import + sorgente clone)
   target: blankConn(), // destinazione del clone
   prefer: "auto", // auto | native | rust
+  dryRun: false, // anteprima: non modifica nulla, mostra solo il piano
   dumpPath: "", // file di destinazione del dump
   importPath: "", // file da importare
   busy: false, // operazione in corso
+  liveLog: [], // righe di avanzamento in tempo reale (evento charon://progress)
   result: null, // ultimo OpResult
   // Opzioni del clone. dataOnly: preserva lo schema destinazione (TRUNCATE+dati).
   // mask: regole {table, column, kind, value} (value solo per kind='fixed').
@@ -98,9 +101,20 @@ export function reportFor(engine) {
   return app.reports.find((r) => r.engine === engine);
 }
 
+// Si iscrive (una volta) all'avanzamento live emesso dal backend.
+let progressReady = false;
+export async function initProgress() {
+  if (progressReady) return;
+  progressReady = true;
+  await listen("charon://progress", (e) => {
+    if (app.busy) app.liveLog.push(String(e.payload));
+  });
+}
+
 async function withBusy(fn) {
   app.busy = true;
   app.result = null;
+  app.liveLog = []; // azzera il log live a ogni nuova operazione
   try {
     app.result = await fn();
   } catch (e) {
@@ -112,8 +126,10 @@ async function withBusy(fn) {
 
 export const runTest = (conn) => withBusy(() => testConnection(conn, app.prefer));
 export const runDump = () =>
-  withBusy(() => dumpDatabase(app.conn, app.dumpPath, app.prefer));
+  withBusy(() => dumpDatabase(app.conn, app.dumpPath, app.prefer, app.dryRun));
 export const runImport = () =>
-  withBusy(() => importDump(app.conn, app.importPath, app.prefer));
+  withBusy(() => importDump(app.conn, app.importPath, app.prefer, app.dryRun));
 export const runClone = () =>
-  withBusy(() => cloneDatabase(app.conn, app.target, app.prefer, buildCloneOptions()));
+  withBusy(() =>
+    cloneDatabase(app.conn, app.target, app.prefer, buildCloneOptions(), app.dryRun),
+  );

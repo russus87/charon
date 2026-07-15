@@ -1,0 +1,6 @@
+# Ordine di caricamento delle tabelle (rispetta i vincoli di PK/FK).
+# Una tabella per riga; l'estensione .ctl è opzionale. Righe vuote e #commenti
+# vengono ignorate. Questo file riproduce il ruolo degli script script_load_*.sh
+# della documentazione, ma in modo portabile e indipendente dalla shell.
+CUSTOMERS
+ORDERS

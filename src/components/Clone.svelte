@@ -2,6 +2,7 @@
   import {
     app,
     runClone,
+    runTest,
     setEngine,
     addMaskRule,
     removeMaskRule,
@@ -90,9 +91,19 @@
 
     <div class="card bar">
       <PreferPicker />
-      <button class="btn primary" disabled={app.busy || !ready} onclick={runClone}>
-        {opts.dataOnly ? "Sincronizza dati" : "Clona database"}
-      </button>
+      <div class="btns">
+        <button class="btn ghost" disabled={app.busy || !app.conn.database}
+                onclick={() => runTest(app.conn)}>
+          Test sorgente
+        </button>
+        <button class="btn ghost" disabled={app.busy || !app.target.database}
+                onclick={() => runTest(app.target)}>
+          Test destinazione
+        </button>
+        <button class="btn primary" disabled={app.busy || !ready} onclick={runClone}>
+          {opts.dataOnly ? "Sincronizza dati" : "Clona database"}
+        </button>
+      </div>
     </div>
   </div>
 
@@ -198,6 +209,11 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+    flex-wrap: wrap;
+  }
+  .btns {
+    display: flex;
+    gap: 8px;
     flex-wrap: wrap;
   }
 </style>

@@ -1,5 +1,5 @@
 <script>
-  import { app, runImport } from "../lib/state.svelte.js";
+  import { app, runImport, runTest } from "../lib/state.svelte.js";
   import { pickOpenPath } from "../lib/api.js";
   import ConnForm from "./ConnForm.svelte";
   import ResultPanel from "./ResultPanel.svelte";
@@ -30,9 +30,15 @@
 
       <div class="actions-row">
         <PreferPicker />
-        <button class="btn primary" disabled={app.busy || !ready} onclick={runImport}>
-          Importa dump
-        </button>
+        <div class="btns">
+          <button class="btn ghost" disabled={app.busy || !app.conn.database}
+                  onclick={() => runTest(app.conn)}>
+            Prova connessione
+          </button>
+          <button class="btn primary" disabled={app.busy || !ready} onclick={runImport}>
+            Importa dump
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -50,6 +56,18 @@
   h3 {
     margin: 0;
     font-size: 16px;
+  }
+  .actions-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .btns {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
   }
   .warn-note {
     margin: 0;

@@ -29,6 +29,9 @@
   <div class="log">
     {#if app.busy}
       <div class="spinner">Operazione in corso…</div>
+      {#each app.liveLog as line}
+        <div class="line" class:cmd={line.startsWith("$")}>{line}</div>
+      {/each}
     {:else if r && r.log && r.log.length}
       {#each r.log as line}
         <div class="line" class:cmd={line.startsWith("$")}>{line}</div>

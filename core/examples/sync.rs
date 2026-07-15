@@ -118,7 +118,8 @@ fn main() {
         }
         "dump-src" => {
             let out = std::env::args().nth(2).expect("uso: dump-src <file>");
-            let r = ops::dump(&conn("SRC"), &out, Prefer::Auto);
+            let dry = env("DRY_RUN", "") == "1";
+            let r = ops::dump(&conn("SRC"), &out, Prefer::Auto, dry);
             print_result("DUMP sorgente", &r);
             std::process::exit(if r.ok { 0 } else { 1 });
         }
@@ -131,7 +132,8 @@ fn main() {
                 data_only: env("DATA_ONLY", "") == "1",
                 mask: parse_mask(&env("MASK", "")),
             };
-            let r = ops::clone(&conn("SRC"), &conn("DST"), Prefer::Auto, &opts);
+            let dry = env("DRY_RUN", "") == "1";
+            let r = ops::clone(&conn("SRC"), &conn("DST"), Prefer::Auto, &opts, dry);
             print_result("CLONE sorgente → destinazione", &r);
             std::process::exit(if r.ok { 0 } else { 1 });
         }

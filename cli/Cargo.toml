@@ -1,0 +1,22 @@
+# CLI headless di Charon: stesso `core` puro Rust dell'app desktop, senza GUI.
+# Pensata per sistemi senza diritti di amministrazione e per l'automazione
+# (CI, script di migrazione, test su Docker). Zero dipendenze oltre al core:
+# il parsing degli argomenti è fatto a mano per massimizzare la portabilità.
+[package]
+name = "charon-cli"
+version = "0.2.0"
+edition = "2021"
+description = "Charon CLI - dump/import/clone di database, con dry-run"
+license = "MIT"
+
+[[bin]]
+name = "charon"
+path = "src/main.rs"
+
+[features]
+# Come per l'app: abilita il driver Oracle puro-Rust (serve l'Instant Client a
+# runtime). Le build "portabili" senza Oracle restano un singolo binario.
+oracle = ["charon-core/oracle-driver"]
+
+[dependencies]
+charon-core = { path = "../core" }

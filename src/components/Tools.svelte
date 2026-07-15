@@ -1,9 +1,29 @@
 <script>
   import { app, loadReports } from "../lib/state.svelte.js";
+  import { oracleSetup, pickOracleZip } from "../lib/api.js";
 
   // Indice della card con il pannello "come risolvere" aperto (null = nessuno).
   let openHelp = $state(null);
   const toggleHelp = (i) => (openHelp = openHelp === i ? null : i);
+
+  // Esito dell'ultimo "Configura Instant Client" (per la card Oracle).
+  let oraSetup = $state({ busy: false, msg: "" });
+
+  async function setupOracle() {
+    const zip = await pickOracleZip();
+    if (!zip) return;
+    oraSetup.busy = true;
+    oraSetup.msg = "";
+    try {
+      const r = await oracleSetup(zip);
+      oraSetup.msg = (r.ok ? "✅ " : "⚠️ ") + r.message;
+      if (r.ok) await loadReports(); // aggiorna lo stato dei motori
+    } catch (e) {
+      oraSetup.msg = "⚠️ " + String(e);
+    } finally {
+      oraSetup.busy = false;
+    }
+  }
 </script>
 
 <div class="tools">
@@ -78,6 +98,19 @@
         </ul>
 
         <p class="note">{r.note}</p>
+
+        {#if r.engine === "oracle"}
+          <div class="ora-setup">
+            <button class="btn ghost" disabled={oraSetup.busy} onclick={setupOracle}>
+              {oraSetup.busy ? "Configuro…" : "Configura Instant Client…"}
+            </button>
+            <span class="ora-hint">
+              Scegli lo <code>.zip</code> "Basic/Basic Lite" scaricato da Oracle: Charon
+              lo scompatta in una cartella utente (nessun admin) e lo aggancia.
+            </span>
+            {#if oraSetup.msg}<p class="ora-msg">{oraSetup.msg}</p>{/if}
+          </div>
+        {/if}
       </div>
     {/each}
   </div>
@@ -267,5 +300,30 @@
     background: var(--surface-2);
     padding: 10px 12px;
     border-radius: 10px;
+  }
+  .ora-setup {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border-top: 1px solid var(--border, rgba(127, 127, 127, 0.18));
+    padding-top: 12px;
+  }
+  .ora-hint {
+    font-size: 12px;
+    color: var(--ink-soft);
+    line-height: 1.5;
+  }
+  .ora-hint code {
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  .ora-msg {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--ink);
+    background: var(--surface-2);
+    padding: 8px 10px;
+    border-radius: 8px;
+    word-break: break-word;
   }
 </style>

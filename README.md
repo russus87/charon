@@ -63,9 +63,89 @@ charon/
 │     ├─ tools.rs   # rilevamento tool nativi nel PATH + esecuzione comandi
 │     ├─ postgres.rs / mssql.rs / oracle.rs   # implementazioni per motore
 │     └─ ops.rs     # orchestratore: sceglie il metodo e instrada
+├─ cli/             # binario `charon` headless (stessa logica, senza GUI)
 ├─ src-tauri/       # backend Tauri (comandi sottili sopra al core)
-└─ src/             # UI Svelte 5 (top-bar + tab + area form/console)
+├─ src/             # UI Svelte 5 (top-bar + tab + area form/console)
+└─ docker/          # DB "usa e getta" per prove end-to-end (Postgres, Oracle)
 ```
+
+## CLI (`charon`)
+
+Oltre all'app desktop c'è una **CLI headless** con la stessa identica logica del
+core: ideale su server, in CI, e su sistemi **senza GUI o senza diritti di
+amministrazione**. È un **singolo binario** (per PostgreSQL/SQL Server/SSH non
+serve installare alcun client).
+
+Il binario CLI si chiama **`charon`**; l'app desktop (Tauri) è **`charon-desktop`**
+(nome-prodotto "Charon"): così i due eseguibili convivono nello stesso `target/`.
+
+```bash
+cargo build --release -p charon-cli          # senza Oracle: binario unico
+cargo build --release -p charon-cli --features oracle   # con driver Oracle
+
+charon tools                                  # cosa è disponibile sulla macchina
+CHARON_PASSWORD=… charon test  --engine pg --host db --db app --user app
+CHARON_PASSWORD=… charon dump  --db app --user app --out app.sql --prefer rust
+CHARON_PASSWORD=… CHARON_DST_PASSWORD=… charon clone \
+    --db prod --user app --dst-host stage --dst-db stage --dst-user app \
+    --data-only --mask users.email=email
+charon help                                   # elenco completo di comandi e flag
+```
+
+Le **password** si passano da variabile d'ambiente (`CHARON_PASSWORD`,
+`CHARON_DST_PASSWORD`), non come argomenti (non finiscono nella lista processi).
+
+### Dry-run (anteprima)
+
+Ogni operazione che modifica dati — **dump, import, clone, oracle-load** —
+accetta **`--dry-run`** (nella GUI: interruttore **Dry-run** accanto al Metodo):
+mostra esattamente **cosa verrebbe fatto** (comandi, tabelle, righe, ordine)
+**senza toccare nulla**. Consigliato prima di ogni operazione distruttiva.
+
+### Oracle senza privilegi DBA: pacchetti SQL\*Loader
+
+`charon oracle-load --dir <pacchetto>` importa un pacchetto **SQL\*Loader**
+(`.ctl`/`.ldr`, come esportato da SQL Developer in "formato Loader") lanciando
+`sqlldr` per ogni tabella nell'ordine di `load_order.txt` (rispetta i vincoli
+FK). Gestisce i **BLOB** (via `LOBFILE`), che gli `INSERT` non trasferiscono, e al
+termine **riallinea le sequenze** identity (passaggio obbligatorio dopo un load
+diretto). È il metodo no-admin descritto nella documentazione Oracle. Vedi
+`docker/oracle/sample-package/` per un esempio e `docker/README.md` per provarlo.
+
+**Instant Client senza installazione.** Il path Oracle richiede l'Oracle Instant
+Client a runtime (solo librerie, no-admin). Charon lo gestisce da sé: scarichi UNA
+volta lo `.zip` ufficiale per il tuo OS/arch e lo agganci con
+
+```bash
+charon oracle-setup --zip instantclient-basiclite-<os>-<arch>.zip
+```
+
+(oppure dalla GUI: **Strumenti → "Configura Instant Client"**). Charon lo
+scompatta in una cartella dell'utente, verifica la libreria giusta per il sistema
+(`oci.dll` / `libclntsh.dylib` / `libclntsh.so`) e la ricorda.
+
+Oppure, **zero-config**: lascia lo `.zip` (o la cartella estratta) in
+**`vendor/oracle/`** e Charon lo aggancia da solo al primo uso di Oracle (i file
+lì restano solo in locale, non vengono committati). Serve una build
+`--features oracle`. Dettagli e limiti in **[PORTABILITY.md](PORTABILITY.md)**.
+
+## Prove con Docker
+
+`docker/` contiene ambienti pronti per esercitare Charon **senza client DB
+installati**:
+
+```bash
+./docker/postgres/run-postgres-test.sh   # clone pieno + data-only + mask + sequenze
+./docker/oracle/run-oracle-test.sh       # dry-run sempre; reale con Instant Client
+```
+
+## Portabilità (Windows / senza admin)
+
+I limiti di portabilità sono documentati in **[PORTABILITY.md](PORTABILITY.md)**.
+In breve: la CLI puro-Rust verso **PostgreSQL/SQL Server** (anche via tunnel SSH)
+è un **binario unico, no-admin, cross-platform**; **Oracle** è l'unico motore che
+richiede una dipendenza a runtime (l'**Instant Client**, solo librerie, comunque
+senza admin).
 
 ## Sviluppo
 

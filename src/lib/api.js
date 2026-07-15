@@ -7,14 +7,25 @@ export const detectTools = () => invoke("detect_tools");
 export const testConnection = (conn, prefer) =>
   invoke("test_connection", { conn, prefer });
 
-export const dumpDatabase = (conn, out, prefer) =>
-  invoke("dump_database", { conn, out, prefer });
+export const dumpDatabase = (conn, out, prefer, dryRun) =>
+  invoke("dump_database", { conn, out, prefer, dryRun });
 
-export const importDump = (conn, input, prefer) =>
-  invoke("import_dump", { conn, input, prefer });
+export const importDump = (conn, input, prefer, dryRun) =>
+  invoke("import_dump", { conn, input, prefer, dryRun });
 
-export const cloneDatabase = (source, target, prefer, options) =>
-  invoke("clone_database", { source, target, prefer, options });
+export const cloneDatabase = (source, target, prefer, options, dryRun) =>
+  invoke("clone_database", { source, target, prefer, options, dryRun });
+
+// Import di un pacchetto SQL*Loader (.ctl/.ldr) in Oracle via sqlldr.
+export const oracleLoad = (conn, packageDir, dryRun) =>
+  invoke("oracle_load", { conn, packageDir, dryRun });
+
+// Scompatta e aggancia l'Oracle Instant Client da uno .zip (o cartella).
+export const oracleSetup = (path) => invoke("oracle_setup", { path });
+
+// Dialogo per scegliere lo .zip dell'Instant Client.
+export const pickOracleZip = () =>
+  open({ multiple: false, filters: [{ name: "Instant Client (zip)", extensions: ["zip"] }] });
 
 // Dialoghi nativi per scegliere i file di dump.
 export const pickSavePath = (defaultName) =>

@@ -74,7 +74,7 @@ fn finalize(
             }
         }
     };
-    log.push(format!("Metodo selezionato: {}", method.label()));
+    crate::progress::note(&mut log, format!("Metodo selezionato: {}", method.label()));
     match f(method, &mut log) {
         Ok(()) => OpResult::ok(method, success_msg, log),
         Err(e) => OpResult {
@@ -87,25 +87,37 @@ fn finalize(
     }
 }
 
-fn dispatch_dump(conn: &Connection, out: &str, m: Method, log: &mut Vec<String>) -> Result<()> {
+fn dispatch_dump(
+    conn: &Connection,
+    out: &str,
+    m: Method,
+    dry: bool,
+    log: &mut Vec<String>,
+) -> Result<()> {
     match (conn.engine, m) {
-        (Engine::Postgres, Method::Native) => postgres::native_dump(conn, out, log),
-        (Engine::Postgres, Method::Rust) => postgres::rust_dump(conn, out, log),
-        (Engine::Sqlserver, Method::Native) => mssql::native_dump(conn, out, log),
-        (Engine::Sqlserver, Method::Rust) => mssql::rust_dump(conn, out, log),
-        (Engine::Oracle, Method::Native) => oracle::native_dump(conn, out, log),
-        (Engine::Oracle, Method::Rust) => oracle::rust_dump(conn, out, log),
+        (Engine::Postgres, Method::Native) => postgres::native_dump(conn, out, dry, log),
+        (Engine::Postgres, Method::Rust) => postgres::rust_dump(conn, out, dry, log),
+        (Engine::Sqlserver, Method::Native) => mssql::native_dump(conn, out, dry, log),
+        (Engine::Sqlserver, Method::Rust) => mssql::rust_dump(conn, out, dry, log),
+        (Engine::Oracle, Method::Native) => oracle::native_dump(conn, out, dry, log),
+        (Engine::Oracle, Method::Rust) => oracle::rust_dump(conn, out, dry, log),
     }
 }
 
-fn dispatch_import(conn: &Connection, input: &str, m: Method, log: &mut Vec<String>) -> Result<()> {
+fn dispatch_import(
+    conn: &Connection,
+    input: &str,
+    m: Method,
+    dry: bool,
+    log: &mut Vec<String>,
+) -> Result<()> {
     match (conn.engine, m) {
-        (Engine::Postgres, Method::Native) => postgres::native_import(conn, input, log),
-        (Engine::Postgres, Method::Rust) => postgres::rust_import(conn, input, log),
-        (Engine::Sqlserver, Method::Native) => mssql::native_import(conn, input, log),
-        (Engine::Sqlserver, Method::Rust) => mssql::rust_import(conn, input, log),
-        (Engine::Oracle, Method::Native) => oracle::native_import(conn, input, log),
-        (Engine::Oracle, Method::Rust) => oracle::rust_import(conn, input, log),
+        (Engine::Postgres, Method::Native) => postgres::native_import(conn, input, dry, log),
+        (Engine::Postgres, Method::Rust) => postgres::rust_import(conn, input, dry, log),
+        (Engine::Sqlserver, Method::Native) => mssql::native_import(conn, input, dry, log),
+        (Engine::Sqlserver, Method::Rust) => mssql::rust_import(conn, input, dry, log),
+        (Engine::Oracle, Method::Native) => oracle::native_import(conn, input, dry, log),
+        (Engine::Oracle, Method::Rust) => oracle::rust_import(conn, input, dry, log),
     }
 }
 
@@ -114,15 +126,16 @@ fn dispatch_clone(
     dst: &Connection,
     m: Method,
     opts: &CloneOptions,
+    dry: bool,
     log: &mut Vec<String>,
 ) -> Result<()> {
     match (src.engine, m) {
-        (Engine::Postgres, Method::Native) => postgres::native_clone(src, dst, opts, log),
-        (Engine::Postgres, Method::Rust) => postgres::rust_clone(src, dst, opts, log),
-        (Engine::Sqlserver, Method::Native) => mssql::native_clone(src, dst, opts, log),
-        (Engine::Sqlserver, Method::Rust) => mssql::rust_clone(src, dst, opts, log),
-        (Engine::Oracle, Method::Native) => oracle::native_clone(src, dst, opts, log),
-        (Engine::Oracle, Method::Rust) => oracle::rust_clone(src, dst, opts, log),
+        (Engine::Postgres, Method::Native) => postgres::native_clone(src, dst, opts, dry, log),
+        (Engine::Postgres, Method::Rust) => postgres::rust_clone(src, dst, opts, dry, log),
+        (Engine::Sqlserver, Method::Native) => mssql::native_clone(src, dst, opts, dry, log),
+        (Engine::Sqlserver, Method::Rust) => mssql::rust_clone(src, dst, opts, dry, log),
+        (Engine::Oracle, Method::Native) => oracle::native_clone(src, dst, opts, dry, log),
+        (Engine::Oracle, Method::Rust) => oracle::rust_clone(src, dst, opts, dry, log),
     }
 }
 
@@ -172,41 +185,61 @@ fn early_error(e: Error) -> OpResult {
     }
 }
 
-/// Crea un dump del database in `out`.
-pub fn dump(conn: &Connection, out: &str, prefer: Prefer) -> OpResult {
+/// Prefissa il log con la modalità dry-run, quando attiva.
+fn note_dry(dry: bool, log: &mut Vec<String>) {
+    if dry {
+        crate::progress::note(log, "── DRY-RUN: anteprima, nessuna modifica verrà applicata ──");
+    }
+}
+
+/// Crea un dump del database in `out`. Con `dry`, mostra solo cosa verrebbe fatto.
+pub fn dump(conn: &Connection, out: &str, prefer: Prefer, dry: bool) -> OpResult {
     let (conn, _guard) = match prepare(conn) {
         Ok(x) => x,
         Err(e) => return early_error(e),
     };
-    let res = finalize(
-        conn.engine,
-        prefer,
-        format!("Dump completato → {out}"),
-        |m, log| dispatch_dump(&conn, out, m, log),
-    );
-    if res.ok {
+    let msg = if dry {
+        format!("Dry-run dump → {out} (nessun file scritto)")
+    } else {
+        format!("Dump completato → {out}")
+    };
+    let res = finalize(conn.engine, prefer, msg, |m, log| {
+        note_dry(dry, log);
+        dispatch_dump(&conn, out, m, dry, log)
+    });
+    if res.ok && !dry {
         res.with_artifact(out)
     } else {
         res
     }
 }
 
-/// Importa un dump `input` nel database.
-pub fn import(conn: &Connection, input: &str, prefer: Prefer) -> OpResult {
+/// Importa un dump `input` nel database. Con `dry`, mostra solo cosa verrebbe fatto.
+pub fn import(conn: &Connection, input: &str, prefer: Prefer, dry: bool) -> OpResult {
     let (conn, _guard) = match prepare(conn) {
         Ok(x) => x,
         Err(e) => return early_error(e),
     };
-    finalize(
-        conn.engine,
-        prefer,
-        "Import completato".into(),
-        |m, log| dispatch_import(&conn, input, m, log),
-    )
+    let msg = if dry {
+        "Dry-run import (nessuna modifica applicata)".into()
+    } else {
+        "Import completato".into()
+    };
+    finalize(conn.engine, prefer, msg, |m, log| {
+        note_dry(dry, log);
+        dispatch_import(&conn, input, m, dry, log)
+    })
 }
 
 /// Clona il database `src` su `dst` (devono essere dello stesso motore).
-pub fn clone(src: &Connection, dst: &Connection, prefer: Prefer, opts: &CloneOptions) -> OpResult {
+/// Con `dry`, ispeziona la sorgente e mostra il piano senza toccare la destinazione.
+pub fn clone(
+    src: &Connection,
+    dst: &Connection,
+    prefer: Prefer,
+    opts: &CloneOptions,
+    dry: bool,
+) -> OpResult {
     if src.engine != dst.engine {
         return OpResult {
             ok: false,
@@ -228,19 +261,102 @@ pub fn clone(src: &Connection, dst: &Connection, prefer: Prefer, opts: &CloneOpt
     // Il mascheramento riscrive i valori riga per riga: possibile solo col puro
     // Rust. Se richiesto, forziamo quel metodo a prescindere dalla preferenza.
     let effective = if opts.has_mask() { Prefer::Rust } else { prefer };
-    finalize(
-        src.engine,
-        effective,
-        "Clonazione completata".into(),
-        |m, log| {
-            if opts.has_mask() && m != Method::Rust {
-                return Err(Error::Unsupported(
-                    "il mascheramento richiede il metodo puro Rust".into(),
-                ));
-            }
-            dispatch_clone(&src, &dst, m, opts, log)
+    let msg = if dry {
+        "Dry-run clonazione (destinazione non modificata)".into()
+    } else {
+        "Clonazione completata".into()
+    };
+    finalize(src.engine, effective, msg, |m, log| {
+        note_dry(dry, log);
+        if opts.has_mask() && m != Method::Rust {
+            return Err(Error::Unsupported(
+                "il mascheramento richiede il metodo puro Rust".into(),
+            ));
+        }
+        dispatch_clone(&src, &dst, m, opts, dry, log)
+    })
+}
+
+/// Importa un **pacchetto SQL\*Loader** (cartella con file `.ctl`/`.ldr`, come
+/// esportato da SQL Developer in formato Loader) invocando `sqlldr` per ogni
+/// tabella nell'ordine dato. È il workflow no-admin descritto nella
+/// documentazione Oracle: gestisce anche i BLOB (via LOBFILE) che gli `INSERT`
+/// non possono trasferire. Con `dry`, stampa i comandi `sqlldr` senza eseguirli.
+///
+/// Al termine (se non in dry-run e col driver Oracle disponibile) riallinea le
+/// sequenze identity, passaggio obbligatorio dopo un load diretto.
+pub fn oracle_load(conn: &Connection, package_dir: &str, dry: bool) -> OpResult {
+    if conn.engine != Engine::Oracle {
+        return OpResult {
+            ok: false,
+            method: Method::Native,
+            message: "oracle-load è specifico del motore Oracle".into(),
+            artifact: None,
+            log: Vec::new(),
+        };
+    }
+    let (conn, _guard) = match prepare(conn) {
+        Ok(x) => x,
+        Err(e) => return early_error(e),
+    };
+    let mut log = Vec::new();
+    note_dry(dry, &mut log);
+    let msg: String = if dry {
+        "Dry-run SQL*Loader (nessun caricamento eseguito)".into()
+    } else {
+        "Caricamento SQL*Loader completato".into()
+    };
+    match oracle::sqlldr_import(&conn, package_dir, dry, &mut log) {
+        Ok(()) => OpResult::ok(Method::Native, msg, log),
+        Err(e) => OpResult {
+            ok: false,
+            method: Method::Native,
+            message: e.to_string(),
+            artifact: None,
+            log,
         },
-    )
+    }
+}
+
+/// Configura l'**Oracle Instant Client** partendo da uno `.zip` ufficiale (o da
+/// una cartella già estratta): Charon lo scompatta in una cartella dell'utente
+/// (nessun admin), verifica che contenga le librerie per il sistema corrente e
+/// ricorda il percorso. Da lì in poi le operazioni Oracle puro-Rust lo usano.
+pub fn oracle_setup(path: &str) -> OpResult {
+    // `mut` serve solo nel ramo con la feature Oracle (provision scrive nel log).
+    #[allow(unused_mut)]
+    let mut log = Vec::new();
+    #[cfg(feature = "oracle-driver")]
+    {
+        match oracle::provision(path, &mut log) {
+            Ok(dir) => OpResult::ok(
+                Method::Rust,
+                format!("Instant Client configurato: {}", dir.display()),
+                log,
+            )
+            .with_artifact(dir.display().to_string()),
+            Err(e) => OpResult {
+                ok: false,
+                method: Method::Rust,
+                message: e.to_string(),
+                artifact: None,
+                log,
+            },
+        }
+    }
+    #[cfg(not(feature = "oracle-driver"))]
+    {
+        let _ = path;
+        OpResult {
+            ok: false,
+            method: Method::Rust,
+            message: "questa build non include il driver Oracle: usa una release ufficiale \
+                      (o compila con --features oracle)"
+                .into(),
+            artifact: None,
+            log,
+        }
+    }
 }
 
 /// Verifica la connessione al database.

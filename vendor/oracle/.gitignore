@@ -1,0 +1,5 @@
+# Le librerie Oracle NON vanno nel repo (sono grandi e di proprietà Oracle):
+# restano solo in locale. Charon le aggancia comunque da qui, automaticamente.
+*
+!.gitignore
+!README.md

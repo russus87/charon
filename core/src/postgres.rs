@@ -5,7 +5,7 @@
 //!   dump SQL best-effort (schema essenziale + dati come INSERT), reimportabile.
 
 use crate::model::*;
-use crate::tools::{find_tool, has_tool, run};
+use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
 use std::process::Command;
 
@@ -91,7 +91,7 @@ fn psql_path() -> Result<std::path::PathBuf> {
     find_tool("psql").ok_or_else(|| Error::ToolMissing("psql".into()))
 }
 
-pub fn native_dump(conn: &Connection, out: &str, log: &mut Vec<String>) -> Result<()> {
+pub fn native_dump(conn: &Connection, out: &str, dry: bool, log: &mut Vec<String>) -> Result<()> {
     let exe = pg_dump_path()?;
     let port = conn.port.to_string();
     let mut cmd = Command::new(&exe);
@@ -107,14 +107,14 @@ pub fn native_dump(conn: &Connection, out: &str, log: &mut Vec<String>) -> Resul
         "pg_dump -h {} -p {} -U {} -d {} --no-owner --no-privileges -f {}",
         conn.host, port, conn.user, conn.database, out
     );
-    if run(log, &display, &mut cmd)?.success {
+    if plan_or_run(log, &display, &mut cmd, dry)?.success {
         Ok(())
     } else {
         Err(Error::Cmd("pg_dump ha segnalato un errore (vedi log)".into()))
     }
 }
 
-pub fn native_import(conn: &Connection, input: &str, log: &mut Vec<String>) -> Result<()> {
+pub fn native_import(conn: &Connection, input: &str, dry: bool, log: &mut Vec<String>) -> Result<()> {
     let exe = psql_path()?;
     let port = conn.port.to_string();
     let mut cmd = Command::new(&exe);
@@ -129,7 +129,7 @@ pub fn native_import(conn: &Connection, input: &str, log: &mut Vec<String>) -> R
         "psql -h {} -p {} -U {} -d {} -v ON_ERROR_STOP=1 -f {}",
         conn.host, port, conn.user, conn.database, input
     );
-    if run(log, &display, &mut cmd)?.success {
+    if plan_or_run(log, &display, &mut cmd, dry)?.success {
         Ok(())
     } else {
         Err(Error::Cmd("psql ha segnalato un errore (vedi log)".into()))
@@ -140,6 +140,7 @@ pub fn native_clone(
     src: &Connection,
     dst: &Connection,
     opts: &CloneOptions,
+    dry: bool,
     log: &mut Vec<String>,
 ) -> Result<()> {
     if opts.has_mask() {
@@ -148,14 +149,14 @@ pub fn native_clone(
         ));
     }
     if opts.data_only {
-        return native_clone_data_only(src, dst, log);
+        return native_clone_data_only(src, dst, dry, log);
     }
     let tmp = std::env::temp_dir().join(format!("charon-pg-{}.sql", std::process::id()));
     let tmp_s = tmp.display().to_string();
     log.push(format!("Dump temporaneo della sorgente in {tmp_s}"));
-    native_dump(src, &tmp_s, log)?;
+    native_dump(src, &tmp_s, dry, log)?;
     log.push("Import sul database di destinazione".into());
-    let res = native_import(dst, &tmp_s, log);
+    let res = native_import(dst, &tmp_s, dry, log);
     let _ = std::fs::remove_file(&tmp);
     res
 }
@@ -163,9 +164,30 @@ pub fn native_clone(
 /// Clone "solo dati" con i tool nativi: `pg_dump --data-only --disable-triggers`
 /// della sorgente, poi sulla destinazione `TRUNCATE` + caricamento in un'unica
 /// transazione (lo schema della destinazione resta intatto). Massima fedeltà.
-fn native_clone_data_only(src: &Connection, dst: &Connection, log: &mut Vec<String>) -> Result<()> {
+fn native_clone_data_only(
+    src: &Connection,
+    dst: &Connection,
+    dry: bool,
+    log: &mut Vec<String>,
+) -> Result<()> {
     let pgd = pg_dump_path()?;
     let psql = psql_path()?;
+    if dry {
+        // In anteprima non tocchiamo i DB: descriviamo la sequenza di passi.
+        log.push(format!(
+            "$ pg_dump -h {} -p {} -U {} -d {} --data-only --disable-triggers -f <tmp>",
+            src.host, src.port, src.user, src.database
+        ));
+        log.push("  (dry-run: dump data-only non eseguito)".into());
+        log.push("  Poi, sulla destinazione, in un'unica transazione:".into());
+        log.push("    SET session_replication_role = replica;".into());
+        log.push("    TRUNCATE TABLE <tabelle public> RESTART IDENTITY CASCADE;".into());
+        log.push(format!(
+            "    \\i <tmp>   (caricamento dati su {}:{}/{})",
+            dst.host, dst.port, dst.database
+        ));
+        return Ok(());
+    }
     let pid = std::process::id();
     let dump = std::env::temp_dir().join(format!("charon-pg-data-{pid}.sql"));
     let load = std::env::temp_dir().join(format!("charon-pg-load-{pid}.sql"));
@@ -256,26 +278,26 @@ pub fn native_test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {
 
 // --------------------------------------------------------------- puro Rust ---
 
-pub fn rust_dump(conn: &Connection, out: &str, log: &mut Vec<String>) -> Result<()> {
+pub fn rust_dump(conn: &Connection, out: &str, dry: bool, log: &mut Vec<String>) -> Result<()> {
     #[cfg(feature = "pg-driver")]
     {
-        return rustimpl::dump(conn, out, log);
+        return rustimpl::dump(conn, out, dry, log);
     }
     #[cfg(not(feature = "pg-driver"))]
     {
-        let _ = (conn, out, log);
+        let _ = (conn, out, dry, log);
         Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
     }
 }
 
-pub fn rust_import(conn: &Connection, input: &str, log: &mut Vec<String>) -> Result<()> {
+pub fn rust_import(conn: &Connection, input: &str, dry: bool, log: &mut Vec<String>) -> Result<()> {
     #[cfg(feature = "pg-driver")]
     {
-        return rustimpl::import(conn, input, log);
+        return rustimpl::import(conn, input, dry, log);
     }
     #[cfg(not(feature = "pg-driver"))]
     {
-        let _ = (conn, input, log);
+        let _ = (conn, input, dry, log);
         Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
     }
 }
@@ -284,15 +306,16 @@ pub fn rust_clone(
     src: &Connection,
     dst: &Connection,
     opts: &CloneOptions,
+    dry: bool,
     log: &mut Vec<String>,
 ) -> Result<()> {
     #[cfg(feature = "pg-driver")]
     {
-        return rustimpl::clone(src, dst, opts, log);
+        return rustimpl::clone(src, dst, opts, dry, log);
     }
     #[cfg(not(feature = "pg-driver"))]
     {
-        let _ = (src, dst, opts, log);
+        let _ = (src, dst, opts, dry, log);
         Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
     }
 }
@@ -443,6 +466,7 @@ mod rustimpl {
 
         for trow in &tables {
             let table: String = trow.get(0);
+            crate::progress::emit(&format!("  tabella {table}…"));
 
             let cols = client
                 .query(
@@ -499,16 +523,34 @@ mod rustimpl {
         Ok(out)
     }
 
-    pub fn dump(conn: &Connection, out: &str, log: &mut Vec<String>) -> Result<()> {
+    pub fn dump(conn: &Connection, out: &str, dry: bool, log: &mut Vec<String>) -> Result<()> {
         log.push("Connessione con tokio-postgres…".into());
         let sql = runtime()?.block_on(dump_sql(conn, &MaskMap::new()))?;
+        let tables = sql.matches("CREATE TABLE ").count();
+        let rows = sql.matches("INSERT INTO ").count();
+        if dry {
+            log.push(format!(
+                "Dry-run: pronto un dump di {tables} tabelle / {rows} INSERT ({} byte). File {out} NON scritto.",
+                sql.len()
+            ));
+            return Ok(());
+        }
         std::fs::write(out, sql)?;
-        log.push(format!("Dump SQL scritto in {out}"));
+        log.push(format!("Dump SQL ({tables} tabelle, {rows} INSERT) scritto in {out}"));
         Ok(())
     }
 
-    pub fn import(conn: &Connection, input: &str, log: &mut Vec<String>) -> Result<()> {
+    pub fn import(conn: &Connection, input: &str, dry: bool, log: &mut Vec<String>) -> Result<()> {
         let sql = std::fs::read_to_string(input)?;
+        if dry {
+            let inserts = sql.matches("INSERT INTO ").count();
+            let creates = sql.matches("CREATE TABLE ").count();
+            log.push(format!(
+                "Dry-run: {input} verrebbe eseguito ({creates} CREATE, {inserts} INSERT, {} righe). Nessuna modifica applicata.",
+                sql.lines().count()
+            ));
+            return Ok(());
+        }
         log.push(format!("Esecuzione di {input} (batch_execute)…"));
         runtime()?.block_on(async {
             let client = connect(conn).await?;
@@ -525,6 +567,7 @@ mod rustimpl {
         src: &Connection,
         dst: &Connection,
         opts: &CloneOptions,
+        dry: bool,
         log: &mut Vec<String>,
     ) -> Result<()> {
         let rt = runtime()?;
@@ -534,10 +577,23 @@ mod rustimpl {
         }
         if opts.data_only {
             log.push("Modalità data-only: preservo lo schema della destinazione.".into());
+            if dry {
+                return rt.block_on(plan_data_only(src, log));
+            }
             rt.block_on(clone_data_only(src, dst, &mask, log))?;
         } else {
             log.push("Lettura schema+dati dalla sorgente…".into());
             let sql = rt.block_on(dump_sql(src, &mask))?;
+            let tables = sql.matches("CREATE TABLE ").count();
+            let rows = sql.matches("INSERT INTO ").count();
+            if dry {
+                log.push(format!(
+                    "Dry-run: verrebbero ricreate {tables} tabelle e inserite {rows} righe su \
+                     {}:{}/{} (DROP + CREATE + dati). Destinazione non modificata.",
+                    dst.host, dst.port, dst.database
+                ));
+                return Ok(());
+            }
             log.push("Scrittura sul database di destinazione (DROP + CREATE + dati)…".into());
             rt.block_on(async {
                 let client = connect(dst).await?;
@@ -545,6 +601,35 @@ mod rustimpl {
             })?;
         }
         log.push("Clonazione completata.".into());
+        Ok(())
+    }
+
+    /// Anteprima (dry-run) del clone data-only: elenca tabelle e conteggi della
+    /// sorgente senza toccare la destinazione.
+    async fn plan_data_only(src: &Connection, log: &mut Vec<String>) -> Result<()> {
+        let s = connect(src).await?;
+        let trows = s
+            .query(
+                "SELECT table_name FROM information_schema.tables \
+                 WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name",
+                &[],
+            )
+            .await
+            .map_err(perr)?;
+        let tables: Vec<String> = trows.iter().map(|r| r.get::<_, String>(0)).collect();
+        log.push(format!(
+            "Dry-run: verrebbe eseguito TRUNCATE ... RESTART IDENTITY CASCADE su {} tabelle, poi il travaso dati:",
+            tables.len()
+        ));
+        for t in &tables {
+            let n = s
+                .query_one(&format!("SELECT count(*) FROM \"{t}\""), &[])
+                .await
+                .map(|r| r.get::<_, i64>(0))
+                .unwrap_or(0);
+            crate::progress::note(log, format!("  {t}: {n} righe da copiare"));
+        }
+        log.push("Destinazione non modificata (anteprima).".into());
         Ok(())
     }
 
@@ -631,7 +716,7 @@ mod rustimpl {
                 .await
                 .map_err(|e| Error::Msg(format!("INSERT in {table}: {e}")))?;
             total += rows.len();
-            log.push(format!("  {table}: {} righe", rows.len()));
+            crate::progress::note(log, format!("  {table}: {} righe", rows.len()));
         }
 
         // Riallinea le sequenze identity/serial al massimo valore inserito.

@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { app, loadReports } from "./lib/state.svelte.js";
+  import { app, loadReports, initProgress } from "./lib/state.svelte.js";
   import TopBar from "./components/TopBar.svelte";
   import Connection from "./components/Connection.svelte";
   import Dump from "./components/Dump.svelte";
@@ -8,7 +8,10 @@
   import Clone from "./components/Clone.svelte";
   import Tools from "./components/Tools.svelte";
 
-  onMount(loadReports);
+  onMount(() => {
+    loadReports();
+    initProgress(); // avanzamento live delle operazioni
+  });
 
   // Le viste sono tab orizzontali (layout diverso dal rail verticale di GlyphBox).
   const tabs = [

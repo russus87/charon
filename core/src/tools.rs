@@ -33,22 +33,44 @@ pub struct CmdOutcome {
     pub stderr: String,
 }
 
+/// Come [`run`], ma se `dry` è `true` NON esegue il comando: registra soltanto la
+/// riga che verrebbe eseguita e restituisce un esito "riuscito" fittizio. È il
+/// punto unico che rende il **dry-run** trasparente a tutti i path nativi: chi
+/// costruisce il `Command` non deve sapere se siamo in anteprima o meno.
+pub fn plan_or_run(
+    log: &mut Vec<String>,
+    display: &str,
+    cmd: &mut Command,
+    dry: bool,
+) -> Result<CmdOutcome> {
+    if dry {
+        crate::progress::note(log, format!("$ {display}"));
+        crate::progress::note(log, "  (dry-run: comando non eseguito)");
+        return Ok(CmdOutcome {
+            success: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+    }
+    run(log, display, cmd)
+}
+
 /// Esegue un comando, accodando una descrizione e l'output al log.
 ///
 /// `display` e' la riga "umana" da mostrare in UI: NON deve contenere la
 /// password (la costruisce il chiamante senza segreti).
 pub fn run(log: &mut Vec<String>, display: &str, cmd: &mut Command) -> Result<CmdOutcome> {
-    log.push(format!("$ {display}"));
+    crate::progress::note(log, format!("$ {display}"));
     let out = cmd
         .output()
         .map_err(|e| Error::Cmd(format!("{display}: {e}")))?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     for line in stdout.lines().take(300) {
-        log.push(line.to_string());
+        crate::progress::note(log, line.to_string());
     }
     for line in stderr.lines().take(300) {
-        log.push(line.to_string());
+        crate::progress::note(log, line.to_string());
     }
     Ok(CmdOutcome {
         success: out.status.success(),

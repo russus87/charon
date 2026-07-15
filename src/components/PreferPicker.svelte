@@ -23,6 +23,13 @@
       </button>
     {/each}
   </div>
+
+  <!-- Dry-run: anteprima senza modifiche. Vale per dump/import/clone. -->
+  <label class="dry" class:on={app.dryRun}
+         title="Anteprima: non modifica nulla, mostra solo cosa verrebbe fatto">
+    <input type="checkbox" bind:checked={app.dryRun} />
+    <span>Dry-run</span>
+  </label>
 </div>
 
 <style>
@@ -57,5 +64,26 @@
     background: var(--surface);
     color: var(--brand);
     box-shadow: var(--shadow-sm);
+  }
+  .dry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ink-soft);
+    padding: 6px 10px;
+    border-radius: 9px;
+    background: var(--surface-2);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .dry.on {
+    color: var(--brand);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+  .dry input {
+    margin: 0;
   }
 </style>

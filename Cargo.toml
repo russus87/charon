@@ -2,5 +2,5 @@
 # Stessa struttura di GlyphBox/Oxiterm: il "core" e' Rust puro e non dipende da
 # Tauri, cosi' la logica di dump/import/clone resta riutilizzabile (anche da CLI).
 [workspace]
-members = ["core", "src-tauri"]
+members = ["core", "src-tauri", "cli"]
 resolver = "2"

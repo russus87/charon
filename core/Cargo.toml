@@ -19,7 +19,8 @@ ssh-tunnel = ["dep:russh"]
 # CI. Off di default solo per tenere veloce la build di sviluppo; le release lo
 # attivano via la feature `oracle` del crate Tauri. A runtime serve l'Instant
 # Client, altrimenti la UI mostra le istruzioni per installarlo.
-oracle-driver = ["dep:oracle"]
+# Include anche l'estrazione dello zip Instant Client (comando `oracle-setup`).
+oracle-driver = ["dep:oracle", "dep:zip"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -39,6 +40,8 @@ futures-util = { version = "0.3", optional = true }
 
 # --- Fallback Oracle (opzionale, richiede Instant Client) ---
 oracle = { version = "0.6", optional = true }
+# Estrazione dell'Instant Client da .zip (solo deflate: formato degli zip Oracle).
+zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
 
 # --- Tunnel SSH puro Rust ---
 russh = { version = "0.54", optional = true }

@@ -21,6 +21,7 @@ pub mod mssql;
 pub mod ops;
 pub mod oracle;
 pub mod postgres;
+pub mod progress;
 pub mod tools;
 pub mod tunnel;
 

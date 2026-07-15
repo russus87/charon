@@ -1,0 +1,25 @@
+# Oracle "usa e getta" per provare il workflow SQL*Loader / clone Oracle→Oracle.
+#
+# Immagine community senza licenza (gvenzl/oracle-free): NON è un prodotto Oracle
+# ufficiale ma è comodissima per i test. Primo avvio lento (scarica alcuni GB e
+# inizializza il DB): attendi il messaggio "DATABASE IS READY TO USE!".
+#
+# Service name pluggable: FREEPDB1. Utente applicativo creato da init/.
+services:
+  charon-ora:
+    image: gvenzl/oracle-free:slim
+    container_name: charon-ora
+    environment:
+      ORACLE_PASSWORD: oracle_pw          # password di SYS/SYSTEM
+      APP_USER: JFORM_DEV                  # schema applicativo di prova
+      APP_USER_PASSWORD: jform_pw
+    ports:
+      - "1521:1521"
+    volumes:
+      # Gli script in initdb.d girano una sola volta, alla creazione del DB.
+      - ./init:/container-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 40

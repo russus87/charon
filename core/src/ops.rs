@@ -259,8 +259,11 @@ pub fn clone(
         Err(e) => return early_error(e),
     };
     // Il mascheramento riscrive i valori riga per riga: possibile solo col puro
-    // Rust. Se richiesto, forziamo quel metodo a prescindere dalla preferenza.
-    let effective = if opts.has_mask() { Prefer::Rust } else { prefer };
+    // Rust. Anche il data-only per SQL Server è implementato solo nel fallback puro
+    // Rust (i tool nativi non lo gestiscono). In questi casi forziamo quel metodo a
+    // prescindere dalla preferenza.
+    let force_rust = opts.has_mask() || (src.engine == Engine::Sqlserver && opts.data_only);
+    let effective = if force_rust { Prefer::Rust } else { prefer };
     let msg = if dry {
         "Dry-run clonazione (destinazione non modificata)".into()
     } else {

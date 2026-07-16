@@ -236,7 +236,8 @@ DESTINAZIONE DEL CLONE: stessi flag col prefisso --dst- (es. --dst-host, --dst-d
 OPZIONI OPERATIVE:
   --prefer auto|native|rust  Metodo (default: auto)
   --dry-run                  Anteprima: non modifica nulla, mostra solo il piano
-  --data-only                Clone: preserva lo schema destinazione (TRUNCATE+dati)
+  --data-only                Clone: preserva lo schema destinazione e copia i dati
+                             (PostgreSQL: sostituisce con TRUNCATE; SQL Server: append)
   --mask tab.col=STRAT       Clone: maschera una colonna (ripetibile)
                              STRAT: null|hash|email|redact|fixed:VALORE
 

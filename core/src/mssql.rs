@@ -10,12 +10,26 @@ use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
 use std::process::Command;
 
-/// Data-only e masking non sono ancora implementati per SQL Server: lo diciamo
-/// chiaramente invece di ignorare l'opzione in silenzio.
+/// Il metodo **nativo** (mssql-scripter/sqlcmd) non gestisce ancora data-only né
+/// masking: lo diciamo chiaramente invece di ignorare l'opzione in silenzio. Il
+/// data-only è invece supportato dal fallback puro Rust (vedi [`reject_mask`]).
 fn reject_unsupported_opts(opts: &CloneOptions) -> Result<()> {
     if opts.data_only || opts.has_mask() {
         return Err(Error::Unsupported(
-            "data-only e mascheramento sono al momento disponibili solo per PostgreSQL".into(),
+            "con i tool nativi SQL Server data-only e mascheramento non sono disponibili: \
+             usa il metodo puro Rust per il data-only"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Il mascheramento non è ancora implementato per SQL Server (nemmeno in puro
+/// Rust); il data-only invece sì. Rifiuta solo il masking.
+fn reject_mask(opts: &CloneOptions) -> Result<()> {
+    if opts.has_mask() {
+        return Err(Error::Unsupported(
+            "il mascheramento delle colonne è al momento disponibile solo per PostgreSQL".into(),
         ));
     }
     Ok(())
@@ -216,10 +230,10 @@ pub fn rust_clone(
     dry: bool,
     log: &mut Vec<String>,
 ) -> Result<()> {
-    reject_unsupported_opts(opts)?;
+    reject_mask(opts)?;
     #[cfg(feature = "mssql-driver")]
     {
-        return rustimpl::clone(src, dst, dry, log);
+        return rustimpl::clone(src, dst, opts.data_only, dry, log);
     }
     #[cfg(not(feature = "mssql-driver"))]
     {
@@ -665,6 +679,123 @@ mod rustimpl {
         Ok(out)
     }
 
+    /// Genera uno script **solo dati (append)** da eseguire sulla *destinazione*:
+    /// legge le righe dalla sorgente e produce solo gli INSERT, **senza** toccare lo
+    /// schema. Le foreign key/CHECK della destinazione vengono disabilitate prima del
+    /// travaso (così l'ordine di inserimento è irrilevante) e riattivate — con
+    /// rivalidazione — alla fine. Modalità *append*: non svuota le tabelle esistenti.
+    async fn data_only_sql(conn: &Connection) -> Result<String> {
+        let mut client = connect(conn).await?;
+
+        let trows = query(
+            &mut client,
+            "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES \
+             WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME",
+        )
+        .await?;
+
+        let mut out = String::new();
+        out.push_str("-- Dump SOLO DATI (append) generato da Charon — fallback puro Rust.\n");
+        out.push_str("-- Lo schema della destinazione NON viene toccato. Le FK/CHECK sono\n");
+        out.push_str("-- disabilitate durante il travaso e riattivate (rivalidate) alla fine.\n\n");
+
+        // Disabilita FK e CHECK su tutte le tabelle della destinazione. La query
+        // dinamica gira sulla destinazione, quindi copre le sue tabelle a runtime.
+        out.push_str("-- Disabilita i vincoli FK/CHECK sulla destinazione\n");
+        out.push_str(
+            "DECLARE @nocheck NVARCHAR(MAX)=N'';\n\
+             SELECT @nocheck += 'ALTER TABLE '+QUOTENAME(SCHEMA_NAME(schema_id))+'.'\
+             +QUOTENAME(name)+' NOCHECK CONSTRAINT ALL;'\n\
+             FROM sys.tables;\n\
+             IF LEN(@nocheck) > 0 EXEC sp_executesql @nocheck;\nGO\n\n",
+        );
+
+        for tr in &trows {
+            let schema = s(tr, 0);
+            let table = s(tr, 1);
+            let full = format!("[{schema}].[{table}]");
+
+            // Colonne inseribili (escluse le computed) + presenza di IDENTITY.
+            let cols = query(
+                &mut client,
+                &format!(
+                    "SELECT c.name, CAST(c.is_identity AS INT), CAST(c.is_computed AS INT) \
+                     FROM sys.columns c WHERE c.object_id = OBJECT_ID('{full}') ORDER BY c.column_id"
+                ),
+            )
+            .await?;
+            let mut insert_cols: Vec<String> = Vec::new();
+            let mut has_identity = false;
+            for c in &cols {
+                let computed = i(c, 2).unwrap_or(0) == 1;
+                if computed {
+                    continue;
+                }
+                if i(c, 1).unwrap_or(0) == 1 {
+                    has_identity = true;
+                }
+                insert_cols.push(s(c, 0));
+            }
+            if insert_cols.is_empty() {
+                continue;
+            }
+
+            let json_rows = query(
+                &mut client,
+                &format!("SELECT * FROM {full} FOR JSON PATH, INCLUDE_NULL_VALUES"),
+            )
+            .await?;
+            let mut json = String::new();
+            for r in &json_rows {
+                json.push_str(&s(r, 0));
+            }
+            if json.trim().is_empty() {
+                continue;
+            }
+            let parsed: Value =
+                serde_json::from_str(&json).map_err(|e| Error::Msg(e.to_string()))?;
+            if let Value::Array(items) = parsed {
+                if items.is_empty() {
+                    continue;
+                }
+                let collist = insert_cols
+                    .iter()
+                    .map(|n| format!("[{n}]"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if has_identity {
+                    out.push_str(&format!("SET IDENTITY_INSERT {full} ON;\nGO\n"));
+                }
+                for item in &items {
+                    let vals = insert_cols
+                        .iter()
+                        .map(|n| lit(item.get(n).unwrap_or(&Value::Null)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("INSERT INTO {full} ({collist}) VALUES ({vals});\n"));
+                }
+                out.push_str("GO\n");
+                if has_identity {
+                    out.push_str(&format!("SET IDENTITY_INSERT {full} OFF;\nGO\n"));
+                }
+                out.push('\n');
+            }
+        }
+
+        // Riattiva e rivalida i vincoli. Se un CHECK/FK fallisce la rivalidazione
+        // (dati incoerenti dopo l'append) run_script lo registra e prosegue.
+        out.push_str("-- Riattiva e rivalida i vincoli FK/CHECK\n");
+        out.push_str(
+            "DECLARE @recheck NVARCHAR(MAX)=N'';\n\
+             SELECT @recheck += 'ALTER TABLE '+QUOTENAME(SCHEMA_NAME(schema_id))+'.'\
+             +QUOTENAME(name)+' WITH CHECK CHECK CONSTRAINT ALL;'\n\
+             FROM sys.tables;\n\
+             IF LEN(@recheck) > 0 EXEC sp_executesql @recheck;\nGO\n",
+        );
+
+        Ok(out)
+    }
+
     async fn run_script(conn: &Connection, sql: &str, log: &mut Vec<String>) -> Result<()> {
         let mut client = connect(conn).await?;
         // sqlcmd separa i batch con righe contenenti solo "GO".
@@ -745,8 +876,17 @@ mod rustimpl {
         Ok(())
     }
 
-    pub fn clone(src: &Connection, dst: &Connection, dry: bool, log: &mut Vec<String>) -> Result<()> {
+    pub fn clone(
+        src: &Connection,
+        dst: &Connection,
+        data_only: bool,
+        dry: bool,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
         let rt = runtime()?;
+        if data_only {
+            return rt.block_on(clone_data_only(src, dst, dry, log));
+        }
         log.push("Lettura schema+dati dalla sorgente…".into());
         let sql = rt.block_on(dump_sql(src))?;
         if dry {
@@ -761,6 +901,32 @@ mod rustimpl {
         log.push("Scrittura sul database di destinazione…".into());
         rt.block_on(run_script(dst, &sql, log))?;
         log.push("Clonazione completata.".into());
+        Ok(())
+    }
+
+    /// Clone **solo dati (append)**: preserva lo schema della destinazione e vi
+    /// riversa i dati della sorgente, disabilitando le FK/CHECK durante il travaso.
+    async fn clone_data_only(
+        src: &Connection,
+        dst: &Connection,
+        dry: bool,
+        log: &mut Vec<String>,
+    ) -> Result<()> {
+        log.push("Modalità solo-dati (append): lo schema della destinazione resta intatto.".into());
+        log.push("Lettura dati dalla sorgente…".into());
+        let sql = data_only_sql(src).await?;
+        if dry {
+            let rows = sql.matches("INSERT INTO ").count();
+            log.push(format!(
+                "Dry-run: verrebbero inserite (append) {rows} righe su {}:{}/{}, con FK/CHECK \
+                 disabilitate durante il travaso e riattivate dopo. Destinazione non modificata.",
+                dst.host, dst.port, dst.database
+            ));
+            return Ok(());
+        }
+        log.push("Inserimento dati sulla destinazione (FK/CHECK disabilitate durante il travaso)…".into());
+        run_script(dst, &sql, log).await?;
+        log.push("Copia dei dati completata (vincoli riattivati).".into());
         Ok(())
     }
 

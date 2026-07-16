@@ -16,6 +16,7 @@
 //! ([`model::OpResult`]) riporta sempre **quale metodo** e' stato usato, cosi' la
 //! UI puo' informare l'utente.
 
+pub mod connections;
 pub mod model;
 pub mod mssql;
 pub mod ops;

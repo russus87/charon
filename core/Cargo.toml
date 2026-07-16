@@ -4,7 +4,7 @@
 # tramite i driver (best-effort). Vedi README per i dettagli.
 [package]
 name = "charon-core"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 
 [features]

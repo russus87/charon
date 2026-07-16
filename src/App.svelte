@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
-  import { app, loadReports, initProgress } from "./lib/state.svelte.js";
-  import TopBar from "./components/TopBar.svelte";
+  import { app, loadReports, loadConnections, initProgress } from "./lib/state.svelte.js";
+  import Sidebar from "./components/Sidebar.svelte";
   import Connection from "./components/Connection.svelte";
   import Dump from "./components/Dump.svelte";
   import Import from "./components/Import.svelte";
@@ -10,48 +10,39 @@
 
   onMount(() => {
     loadReports();
+    loadConnections(); // profili di connessione salvati
     initProgress(); // avanzamento live delle operazioni
   });
 
-  // Le viste sono tab orizzontali (layout diverso dal rail verticale di GlyphBox).
-  const tabs = [
-    { id: "connection", label: "Connessione" },
-    { id: "dump", label: "Dump" },
-    { id: "import", label: "Importa" },
-    { id: "clone", label: "Clona" },
-    { id: "tools", label: "Strumenti" },
-  ];
-
+  // Metadati di ogni vista: titolo + sottotitolo mostrati nell'intestazione.
   const views = {
-    connection: Connection,
-    dump: Dump,
-    import: Import,
-    clone: Clone,
-    tools: Tools,
+    connection: { comp: Connection, title: "Connessioni", sub: "Gestisci le connessioni ai database riutilizzabili nelle operazioni." },
+    dump: { comp: Dump, title: "Dump", sub: "Esporta un database su file." },
+    import: { comp: Import, title: "Importa", sub: "Carica un dump dentro un database." },
+    clone: { comp: Clone, title: "Clona", sub: "Copia schema e dati da una sorgente a una destinazione." },
+    tools: { comp: Tools, title: "Strumenti", sub: "Cosa è disponibile sulla macchina e come si connette Charon." },
   };
 
-  let Current = $derived(views[app.view] ?? Connection);
+  let current = $derived(views[app.view] ?? views.connection);
 </script>
 
 <div class="shell">
-  <TopBar />
-
-  <nav class="tabs">
-    {#each tabs as t}
-      <button
-        class="tab"
-        class:active={app.view === t.id}
-        onclick={() => (app.view = t.id)}
-      >
-        {t.label}
-      </button>
-    {/each}
-  </nav>
+  <Sidebar />
 
   <main class="content">
     {#key app.view}
-      <div class="view fade-in">
-        <Current />
+      {@const Comp = current.comp}
+      <div class="page fade-in">
+        <div class="page-head">
+          <div>
+            <div class="breadcrumb">Charon <span class="sep">/</span> <span class="cur">{current.title}</span></div>
+            <h1 class="title">{current.title}</h1>
+            <p class="subtitle">{current.sub}</p>
+          </div>
+        </div>
+        <div class="view">
+          <Comp />
+        </div>
       </div>
     {/key}
   </main>
@@ -59,54 +50,56 @@
 
 <style>
   .shell {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    min-height: 0;
-  }
-  .tabs {
-    display: flex;
-    gap: 4px;
-    padding: 0 26px;
-    margin-top: 6px;
-  }
-  .tab {
-    border: none;
-    background: transparent;
-    color: var(--ink-soft);
-    font-size: 14px;
-    font-weight: 600;
-    padding: 12px 18px;
-    border-radius: 12px 12px 0 0;
-    position: relative;
-    transition: color 0.15s ease, background 0.15s ease;
-  }
-  .tab:hover {
-    color: var(--ink);
-    background: rgba(255, 255, 255, 0.5);
-  }
-  .tab.active {
-    color: var(--brand);
-    background: var(--surface);
-  }
-  .tab.active::after {
-    content: "";
-    position: absolute;
-    left: 18px;
-    right: 18px;
-    bottom: 6px;
-    height: 3px;
-    border-radius: 3px;
-    background: var(--brand-grad);
+    display: grid;
+    grid-template-columns: var(--sidebar-w) 1fr;
+    height: 100vh;
+    overflow: hidden;
   }
   .content {
-    flex: 1;
-    min-height: 0;
-    padding: 18px 26px 26px;
-    overflow: auto;
+    overflow-y: auto;
+    padding: 22px 30px 30px;
+    min-width: 0;
+  }
+  .page {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    min-height: 100%;
+  }
+  .page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-faint);
+    font-size: 13px;
+    margin-bottom: 6px;
+  }
+  .breadcrumb .sep {
+    opacity: 0.6;
+  }
+  .breadcrumb .cur {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .title {
+    font-size: 24px;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: -0.02em;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    margin: 4px 0 0;
+    font-size: 13.5px;
   }
   .view {
-    height: 100%;
+    flex: 1;
     min-height: 0;
   }
 </style>

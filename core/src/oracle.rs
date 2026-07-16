@@ -238,10 +238,32 @@ fn push_vendor_ancestors(dirs: &mut Vec<std::path::PathBuf>, start: Option<std::
 /// scandagliare cartelle enormi.
 #[cfg(feature = "oracle-driver")]
 fn client_search_dirs() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
     let mut dirs = Vec::new();
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|p| p.to_path_buf()));
+    // 1) Override esplicito (l'app può impostarlo con la resource dir del bundle).
+    if let Some(v) = std::env::var_os("CHARON_ORACLE_VENDOR") {
+        dirs.push(PathBuf::from(v));
+    }
+    // 2) Risorse impacchettate da Tauri (bundle.resources): percorsi tipici
+    //    relativi all'eseguibile, per Windows/Linux/macOS.
+    if let Ok(exe) = std::env::current_exe() {
+        let bin = exe.file_name().map(|n| n.to_os_string());
+        if let Some(d) = exe.parent() {
+            dirs.push(d.join("oracle")); // Windows: risorse accanto all'exe
+            dirs.push(d.join("resources").join("oracle"));
+            if let Some(up) = d.parent() {
+                dirs.push(up.join("Resources").join("resources").join("oracle")); // macOS bundle
+                dirs.push(up.join("Resources").join("oracle"));
+                if let Some(name) = &bin {
+                    // Linux deb/AppImage/pkg: <prefix>/lib/<binario>/[resources/]oracle
+                    dirs.push(up.join("lib").join(name).join("resources").join("oracle"));
+                    dirs.push(up.join("lib").join(name).join("oracle"));
+                }
+            }
+        }
+    }
+    // 3) vendor/oracle risalendo da eseguibile e working dir (comodo in sviluppo).
+    let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf()));
     push_vendor_ancestors(&mut dirs, exe_dir);
     push_vendor_ancestors(&mut dirs, std::env::current_dir().ok());
     dirs

@@ -2,33 +2,30 @@
   import {
     app,
     runClone,
-    runTest,
-    setEngine,
+    connById,
+    engineLabel,
     addMaskRule,
     removeMaskRule,
     MASK_KINDS,
   } from "../lib/state.svelte.js";
-  import ConnForm from "./ConnForm.svelte";
+  import ConnPicker from "./ConnPicker.svelte";
   import ResultPanel from "./ResultPanel.svelte";
   import PreferPicker from "./PreferPicker.svelte";
 
-  // Sorgente e destinazione devono avere lo stesso motore: lo allineo.
-  $effect(() => {
-    if (app.target.engine !== app.conn.engine) {
-      setEngine(app.target, app.conn.engine);
-    }
-  });
-
-  let ready = $derived(!!app.conn.database && !!app.target.database);
+  let src = $derived(connById(app.sel.cloneSrc));
+  let dst = $derived(connById(app.sel.cloneDst));
   let opts = $derived(app.cloneOpts);
   let masking = $derived(opts.mask.length > 0);
-  // Il masking richiede il puro Rust: solo PostgreSQL, e forza il metodo.
-  let pgOnly = $derived(app.conn.engine === "postgres");
+  // Il masking richiede il puro Rust: solo PostgreSQL (in base alla sorgente).
+  let pgOnly = $derived(src?.engine === "postgres");
+  // Sorgente e destinazione devono usare lo stesso motore.
+  let mismatch = $derived(!!src && !!dst && src.engine !== dst.engine);
+  let ready = $derived(!!app.sel.cloneSrc && !!app.sel.cloneDst && !mismatch);
 </script>
 
 <div class="workspace">
   <div class="left">
-    <ConnForm conn={app.conn} title="Sorgente" />
+    <ConnPicker bind:selectedId={app.sel.cloneSrc} title="Sorgente" />
 
     <div class="arrow">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -41,7 +38,14 @@
       </span>
     </div>
 
-    <ConnForm conn={app.target} title="Destinazione" />
+    <ConnPicker bind:selectedId={app.sel.cloneDst} title="Destinazione" />
+
+    {#if mismatch}
+      <p class="warn-note">
+        ⚠️ Sorgente ({engineLabel(src.engine)}) e destinazione ({engineLabel(dst.engine)})
+        devono usare lo <b>stesso motore</b>.
+      </p>
+    {/if}
 
     <!-- Opzioni del clone: data-only + mascheramento -->
     <div class="card opts">
@@ -91,19 +95,9 @@
 
     <div class="card bar">
       <PreferPicker />
-      <div class="btns">
-        <button class="btn ghost" disabled={app.busy || !app.conn.database}
-                onclick={() => runTest(app.conn)}>
-          Test sorgente
-        </button>
-        <button class="btn ghost" disabled={app.busy || !app.target.database}
-                onclick={() => runTest(app.target)}>
-          Test destinazione
-        </button>
-        <button class="btn primary" disabled={app.busy || !ready} onclick={runClone}>
-          {opts.dataOnly ? "Sincronizza dati" : "Clona database"}
-        </button>
-      </div>
+      <button class="btn primary" disabled={app.busy || !ready} onclick={runClone}>
+        {opts.dataOnly ? "Sincronizza dati" : "Clona database"}
+      </button>
     </div>
   </div>
 
@@ -116,13 +110,21 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    color: var(--brand);
+    color: var(--accent);
     font-size: 12.5px;
     font-weight: 600;
   }
   .arrow svg {
     width: 20px;
     height: 20px;
+  }
+  .warn-note {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--warn);
+    background: var(--warn-soft);
+    padding: 9px 12px;
+    border-radius: var(--radius-sm);
   }
   .opts {
     padding: 14px 16px;
@@ -141,13 +143,13 @@
     margin-top: 2px;
   }
   .check span strong {
-    color: var(--brand);
+    color: var(--accent);
   }
   .mask {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    border-top: 1px solid var(--border, #2a2a2a);
+    border-top: 1px solid var(--border);
     padding-top: 12px;
   }
   .mask-head {
@@ -163,10 +165,10 @@
   .warn {
     font-size: 12px;
     margin: 0;
-    color: var(--muted, #888);
+    color: var(--text-faint);
   }
   .warn {
-    color: #d98b3a;
+    color: var(--amber);
   }
   .rule {
     display: flex;
@@ -175,12 +177,17 @@
     flex-wrap: wrap;
   }
   .in {
-    padding: 6px 8px;
-    border-radius: 6px;
-    border: 1px solid var(--border, #333);
-    background: var(--input-bg, #1b1b1b);
-    color: inherit;
+    padding: 7px 9px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text);
     font-size: 12.5px;
+  }
+  .in:focus {
+    outline: none;
+    border-color: var(--green-500);
+    box-shadow: 0 0 0 3px var(--green-100);
   }
   .tbl,
   .col {
@@ -209,11 +216,6 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    flex-wrap: wrap;
-  }
-  .btns {
-    display: flex;
-    gap: 8px;
     flex-wrap: wrap;
   }
 </style>

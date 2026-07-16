@@ -4,6 +4,7 @@
 //! l'orchestratore del core e restituisce un `OpResult` (gia' serializzabile),
 //! che riporta SEMPRE quale metodo (nativo o puro Rust) e' stato usato.
 
+use charon_core::connections::{self, ConnectionProfile};
 use charon_core::model::{CloneOptions, Connection, EngineReport, Method, OpResult, Prefer};
 use charon_core::ops;
 use tauri::{AppHandle, Emitter};
@@ -105,6 +106,24 @@ async fn oracle_setup(app: AppHandle, path: String) -> OpResult {
     run_blocking(app, move || ops::oracle_setup(&path)).await
 }
 
+/// Elenco delle connessioni salvate.
+#[tauri::command]
+fn list_connections() -> Vec<ConnectionProfile> {
+    connections::list()
+}
+
+/// Inserisce/aggiorna una connessione salvata; ritorna la lista aggiornata.
+#[tauri::command]
+fn save_connection(profile: ConnectionProfile) -> std::result::Result<Vec<ConnectionProfile>, String> {
+    connections::save(profile).map_err(|e| e.to_string())
+}
+
+/// Elimina una connessione salvata; ritorna la lista aggiornata.
+#[tauri::command]
+fn delete_connection(id: String) -> std::result::Result<Vec<ConnectionProfile>, String> {
+    connections::delete(&id).map_err(|e| e.to_string())
+}
+
 /// Punto di ingresso dell'app Tauri.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -126,6 +145,9 @@ pub fn run() {
             clone_database,
             oracle_load,
             oracle_setup,
+            list_connections,
+            save_connection,
+            delete_connection,
         ])
         .run(tauri::generate_context!())
         .expect("errore irreversibile all'avvio di Charon");

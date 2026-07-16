@@ -1,7 +1,7 @@
 <script>
-  import { app, runImport, runTest } from "../lib/state.svelte.js";
+  import { app, runImport } from "../lib/state.svelte.js";
   import { pickOpenPath } from "../lib/api.js";
-  import ConnForm from "./ConnForm.svelte";
+  import ConnPicker from "./ConnPicker.svelte";
   import ResultPanel from "./ResultPanel.svelte";
   import PreferPicker from "./PreferPicker.svelte";
 
@@ -10,12 +10,12 @@
     if (p) app.importPath = p;
   }
 
-  let ready = $derived(!!app.importPath && !!app.conn.database);
+  let ready = $derived(!!app.importPath && !!app.sel.import);
 </script>
 
 <div class="workspace">
   <div class="left">
-    <ConnForm conn={app.conn} title="Database di destinazione" />
+    <ConnPicker bind:selectedId={app.sel.import} title="Database di destinazione" />
 
     <div class="card box">
       <h3>Dump da importare</h3>
@@ -30,15 +30,9 @@
 
       <div class="actions-row">
         <PreferPicker />
-        <div class="btns">
-          <button class="btn ghost" disabled={app.busy || !app.conn.database}
-                  onclick={() => runTest(app.conn)}>
-            Prova connessione
-          </button>
-          <button class="btn primary" disabled={app.busy || !ready} onclick={runImport}>
-            Importa dump
-          </button>
-        </div>
+        <button class="btn primary" disabled={app.busy || !ready} onclick={runImport}>
+          Importa dump
+        </button>
       </div>
     </div>
   </div>
@@ -62,11 +56,6 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    flex-wrap: wrap;
-  }
-  .btns {
-    display: flex;
-    gap: 10px;
     flex-wrap: wrap;
   }
   .warn-note {

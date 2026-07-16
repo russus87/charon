@@ -1,22 +1,22 @@
 <script>
-  import { app, runDump, runTest } from "../lib/state.svelte.js";
+  import { app, runDump, connById } from "../lib/state.svelte.js";
   import { pickSavePath } from "../lib/api.js";
-  import ConnForm from "./ConnForm.svelte";
+  import ConnPicker from "./ConnPicker.svelte";
   import ResultPanel from "./ResultPanel.svelte";
   import PreferPicker from "./PreferPicker.svelte";
 
   async function choose() {
-    const def = `${app.conn.database || "dump"}.sql`;
+    const def = `${connById(app.sel.dump)?.database || "dump"}.sql`;
     const p = await pickSavePath(def);
     if (p) app.dumpPath = p;
   }
 
-  let ready = $derived(!!app.dumpPath && !!app.conn.database);
+  let ready = $derived(!!app.dumpPath && !!app.sel.dump);
 </script>
 
 <div class="workspace">
   <div class="left">
-    <ConnForm conn={app.conn} title="Database da esportare" />
+    <ConnPicker bind:selectedId={app.sel.dump} title="Database da esportare" />
 
     <div class="card box">
       <h3>File di destinazione</h3>
@@ -27,15 +27,9 @@
 
       <div class="actions-row">
         <PreferPicker />
-        <div class="btns">
-          <button class="btn ghost" disabled={app.busy || !app.conn.database}
-                  onclick={() => runTest(app.conn)}>
-            Prova connessione
-          </button>
-          <button class="btn primary" disabled={app.busy || !ready} onclick={runDump}>
-            Crea dump
-          </button>
-        </div>
+        <button class="btn primary" disabled={app.busy || !ready} onclick={runDump}>
+          Crea dump
+        </button>
       </div>
     </div>
   </div>
@@ -59,11 +53,6 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    flex-wrap: wrap;
-  }
-  .btns {
-    display: flex;
-    gap: 10px;
     flex-wrap: wrap;
   }
 </style>

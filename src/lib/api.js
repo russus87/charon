@@ -4,6 +4,11 @@ import { save, open } from "@tauri-apps/plugin-dialog";
 
 export const detectTools = () => invoke("detect_tools");
 
+// Connessioni salvate (persistite dal backend in ~/.config/charon/connections.json).
+export const listConnections = () => invoke("list_connections");
+export const saveConnection = (profile) => invoke("save_connection", { profile });
+export const deleteConnection = (id) => invoke("delete_connection", { id });
+
 export const testConnection = (conn, prefer) =>
   invoke("test_connection", { conn, prefer });
 

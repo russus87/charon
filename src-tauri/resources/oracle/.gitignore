@@ -1,0 +1,5 @@
+# Le librerie Oracle non vanno nel repo: ci finiscono solo in CI (o in locale).
+# Charon le aggancia da qui a runtime (bundle.resources → resource dir).
+*
+!.gitignore
+!README.md

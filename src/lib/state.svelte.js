@@ -6,12 +6,15 @@ import {
   dumpDatabase,
   importDump,
   cloneDatabase,
+  listConnections,
+  saveConnection,
+  deleteConnection,
 } from "./api.js";
 
 // Porte di default per motore.
 export const PORTS = { postgres: 5432, oracle: 1521, sqlserver: 1433 };
 
-function blankConn(engine = "postgres") {
+export function blankConn(engine = "postgres") {
   return {
     engine,
     host: "localhost",
@@ -39,8 +42,10 @@ export function toggleSsh(conn) {
 export const app = $state({
   view: "connection", // connection | dump | import | clone | tools
   reports: [], // EngineReport[] dei tool rilevati
-  conn: blankConn(), // connessione principale (dump/import + sorgente clone)
-  target: blankConn(), // destinazione del clone
+  connections: [], // ConnectionProfile[] salvate ({id, name, connection})
+  editing: null, // profilo in modifica nella vista Connessioni (o null)
+  // Connessione selezionata per ciascuna operazione (id del profilo).
+  sel: { dump: null, import: null, cloneSrc: null, cloneDst: null },
   prefer: "auto", // auto | native | rust
   dryRun: false, // anteprima: non modifica nulla, mostra solo il piano
   dumpPath: "", // file di destinazione del dump
@@ -52,6 +57,78 @@ export const app = $state({
   // mask: regole {table, column, kind, value} (value solo per kind='fixed').
   cloneOpts: { dataOnly: false, mask: [] },
 });
+
+// ------------------------------------------------------------- connessioni ---
+
+const ENGINE_LABELS = { postgres: "PostgreSQL", oracle: "Oracle", sqlserver: "SQL Server" };
+export const engineLabel = (e) => ENGINE_LABELS[e] ?? e;
+
+// Genera un id stabile per un nuovo profilo (fallback se randomUUID non c'è).
+function newId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `c_${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}`;
+}
+
+// Ritorna l'oggetto Connection di un profilo dato il suo id (o null).
+export function connById(id) {
+  const p = app.connections.find((c) => c.id === id);
+  return p ? p.connection : null;
+}
+
+// Carica le connessioni salvate e imposta selezioni di default sensate.
+export async function loadConnections() {
+  try {
+    app.connections = await listConnections();
+  } catch (e) {
+    console.error(e);
+    app.connections = [];
+  }
+  const first = app.connections[0]?.id ?? null;
+  const valid = (id) => (app.connections.some((c) => c.id === id) ? id : first);
+  app.sel.dump = valid(app.sel.dump);
+  app.sel.import = valid(app.sel.import);
+  app.sel.cloneSrc = valid(app.sel.cloneSrc);
+  app.sel.cloneDst = valid(app.sel.cloneDst);
+}
+
+// Apre l'editor su una NUOVA connessione.
+export function newConnection() {
+  app.editing = { id: newId(), name: "", connection: blankConn(), isNew: true };
+}
+
+// Apre l'editor su una connessione esistente (copia profonda, per annullare).
+export function editConnection(profile) {
+  app.editing = structuredClone($state.snapshot(profile));
+}
+
+export function cancelEdit() {
+  app.editing = null;
+}
+
+// Salva il profilo in modifica; aggiorna la lista e chiude l'editor.
+export async function saveEditing() {
+  const p = app.editing;
+  if (!p || !p.name.trim()) return;
+  const profile = { id: p.id, name: p.name.trim(), connection: $state.snapshot(p.connection) };
+  app.connections = await saveConnection(profile);
+  if (!app.sel.dump) await loadConnections(); // primo salvataggio: seleziona default
+  app.editing = null;
+}
+
+// Elimina il profilo in modifica; aggiorna la lista e chiude l'editor.
+export async function deleteEditing() {
+  const p = app.editing;
+  if (!p) return;
+  app.connections = await deleteConnection(p.id);
+  // Ripulisce le selezioni che puntavano al profilo eliminato.
+  const first = app.connections[0]?.id ?? null;
+  for (const k of ["dump", "import", "cloneSrc", "cloneDst"]) {
+    if (!app.connections.some((c) => c.id === app.sel[k])) app.sel[k] = first;
+  }
+  app.editing = null;
+}
+
+// ------------------------------------------------------------------ masking ---
 
 // Strategie di mascheramento disponibili (kind = tag serde lato Rust).
 export const MASK_KINDS = [
@@ -124,12 +201,37 @@ async function withBusy(fn) {
   }
 }
 
-export const runTest = (conn) => withBusy(() => testConnection(conn, app.prefer));
-export const runDump = () =>
-  withBusy(() => dumpDatabase(app.conn, app.dumpPath, app.prefer, app.dryRun));
-export const runImport = () =>
-  withBusy(() => importDump(app.conn, app.importPath, app.prefer, app.dryRun));
-export const runClone = () =>
-  withBusy(() =>
-    cloneDatabase(app.conn, app.target, app.prefer, buildCloneOptions(), app.dryRun),
+// Risultato d'errore "connessione non selezionata", senza chiamare il backend.
+function needConn(msg) {
+  app.result = { ok: false, method: "native", message: msg, artifact: null, log: [] };
+}
+
+// Testa una connessione (oggetto Connection già risolto, es. dall'editor/picker).
+export const runTest = (conn) => withBusy(() => testConnection($state.snapshot(conn), app.prefer));
+
+export const runDump = () => {
+  const c = connById(app.sel.dump);
+  if (!c) return needConn("Seleziona una connessione salvata.");
+  return withBusy(() => dumpDatabase($state.snapshot(c), app.dumpPath, app.prefer, app.dryRun));
+};
+
+export const runImport = () => {
+  const c = connById(app.sel.import);
+  if (!c) return needConn("Seleziona una connessione salvata.");
+  return withBusy(() => importDump($state.snapshot(c), app.importPath, app.prefer, app.dryRun));
+};
+
+export const runClone = () => {
+  const src = connById(app.sel.cloneSrc);
+  const dst = connById(app.sel.cloneDst);
+  if (!src || !dst) return needConn("Seleziona sorgente e destinazione.");
+  return withBusy(() =>
+    cloneDatabase(
+      $state.snapshot(src),
+      $state.snapshot(dst),
+      app.prefer,
+      buildCloneOptions(),
+      app.dryRun,
+    ),
   );
+};

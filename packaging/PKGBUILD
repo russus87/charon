@@ -2,7 +2,7 @@
 # Pensato per la CI: la versione viene iniettata da release.yml (sed su pkgver).
 # Compila dal sorgente gia' presente nel repo e impacchetta il binario.
 pkgname=charon
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="Dump, import e clonazione di database: PostgreSQL, Oracle, SQL Server (Rust + Tauri + Svelte)"
 arch=('x86_64')
@@ -34,7 +34,15 @@ build() {
 package() {
     cd "$(_repo)"
     # In un workspace Cargo il binario finisce in target/ alla root del repo.
-    install -Dm755 "target/release/charon" "$pkgdir/usr/bin/charon"
+    # Il binario dell'app desktop è "charon-desktop" (vedi mainBinaryName);
+    # lo installiamo come comando "charon".
+    install -Dm755 "target/release/charon-desktop" "$pkgdir/usr/bin/charon"
+    # Instant Client impacchettato (se la CI l'ha scaricato in resources/oracle):
+    # va nella resource dir attesa a runtime da Charon (/usr/lib/charon/...).
+    if [ -f "src-tauri/resources/oracle/instantclient.zip" ]; then
+        install -Dm644 "src-tauri/resources/oracle/instantclient.zip" \
+            "$pkgdir/usr/lib/charon/resources/oracle/instantclient.zip"
+    fi
     install -Dm644 "packaging/charon.desktop" \
         "$pkgdir/usr/share/applications/charon.desktop"
     install -Dm644 "src-tauri/icons/128x128.png" \

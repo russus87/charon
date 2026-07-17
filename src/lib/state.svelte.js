@@ -101,6 +101,30 @@ export function editConnection(profile) {
   app.editing = structuredClone($state.snapshot(profile));
 }
 
+// Nome libero per una copia: "X (copia)", poi "X (copia 2)", "X (copia 3)"…
+// Se il nome è già una copia, riparte dalla radice invece di annidare i suffissi.
+function nextCopyName(base) {
+  const root = (base || "").trim().replace(/\s*\(copia(\s+\d+)?\)$/, "") || "(senza nome)";
+  const taken = new Set(app.connections.map((c) => c.name));
+  let name = `${root} (copia)`;
+  for (let n = 2; taken.has(name); n++) name = `${root} (copia ${n})`;
+  return name;
+}
+
+// Trasforma l'editor corrente in una NUOVA connessione copia: stessi parametri,
+// id e nome nuovi. L'originale non viene toccato — la copia diventa un profilo a
+// sé solo quando si preme Salva. Comodo per puntare un DB di prova.
+export function duplicateEditing() {
+  const p = app.editing;
+  if (!p) return;
+  app.editing = {
+    id: newId(),
+    name: nextCopyName(p.name),
+    connection: structuredClone($state.snapshot(p.connection)),
+    isNew: true,
+  };
+}
+
 export function cancelEdit() {
   app.editing = null;
 }

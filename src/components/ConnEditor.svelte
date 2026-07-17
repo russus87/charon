@@ -4,6 +4,7 @@
     runTest,
     saveEditing,
     deleteEditing,
+    duplicateEditing,
     cancelEdit,
   } from "../lib/state.svelte.js";
   import ConnForm from "./ConnForm.svelte";
@@ -40,6 +41,10 @@
           Prova connessione
         </button>
         {#if !app.editing.isNew}
+          <button class="btn ghost" disabled={app.busy} onclick={duplicateEditing}
+                  title="Crea una copia di questa connessione (es. per un DB di prova)">
+            Duplica
+          </button>
           <button class="btn danger" disabled={app.busy} onclick={deleteEditing}>Elimina</button>
         {/if}
         <button class="btn primary" disabled={app.busy || !canSave} onclick={saveEditing}>

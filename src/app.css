@@ -90,6 +90,7 @@ input,
 select,
 textarea {
   font-family: inherit;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
 
 /* --- pulsanti (stile Red Carpet) --- */
@@ -121,6 +122,11 @@ textarea {
 }
 .btn.primary:hover {
   background: var(--green-700);
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
+}
+.btn.primary:active {
+  transform: translateY(0);
 }
 .btn.ghost {
   border-color: transparent;
@@ -247,7 +253,7 @@ textarea {
 
 /* animazione di entrata vista */
 .fade-in {
-  animation: fade 0.2s ease;
+  animation: fade 0.22s ease;
 }
 @keyframes fade {
   from {
@@ -257,6 +263,46 @@ textarea {
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+/* Entrata a cascata delle card della colonna di sinistra: un tocco di vita
+   quando si cambia vista, senza rallentare l'uso. */
+.workspace .left > * {
+  animation: rise 0.28s ease both;
+}
+.workspace .left > *:nth-child(2) {
+  animation-delay: 0.04s;
+}
+.workspace .left > *:nth-child(3) {
+  animation-delay: 0.08s;
+}
+.workspace .left > *:nth-child(4) {
+  animation-delay: 0.12s;
+}
+.workspace .left > *:nth-child(n + 5) {
+  animation-delay: 0.15s;
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Rispetta chi preferisce meno movimento: niente entrate né trasformazioni. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
 

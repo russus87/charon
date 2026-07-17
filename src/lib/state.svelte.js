@@ -65,6 +65,7 @@ export const app = $state({
   showLog: false, // console (log dettagliato) espansa: l'utente la apre se serve
   resultModal: false, // popup di riepilogo a fine operazione
   lastOp: null, // 'dump' | 'import' | 'clone': quale operazione ha prodotto result
+  confirm: null, // popup di conferma PRIMA di un'operazione (o null)
   // Opzioni del clone. dataOnly: preserva lo schema destinazione (TRUNCATE+dati).
   // mask: regole {table, column, kind, value} (value solo per kind='fixed').
   cloneOpts: { dataOnly: false, mask: [] },
@@ -371,3 +372,107 @@ export const runClone = () => {
     "clone",
   );
 };
+
+// -------------------------------------------------- conferma pre-operazione ---
+
+const PREFER_LABELS = { auto: "Auto", native: "Tool nativi", rust: "Puro Rust" };
+const preferLabel = (p) => PREFER_LABELS[p] ?? p;
+
+// Operazione da eseguire quando l'utente conferma il popup di riepilogo.
+let pendingRun = null;
+
+export function cancelConfirm() {
+  app.confirm = null;
+  pendingRun = null;
+}
+
+export function confirmProceed() {
+  const run = pendingRun;
+  app.confirm = null;
+  pendingRun = null;
+  if (run) run();
+}
+
+// Dump: legge dal DB (sicuro) e scrive un file. Rischio basso.
+export function requestDump() {
+  const c = connById(app.sel.dump);
+  if (!c) return needConn("Seleziona una connessione salvata.", "dump");
+  app.confirm = {
+    title: app.dryRun ? "Anteprima del dump" : "Confermi il dump?",
+    cta: app.dryRun ? "Esegui anteprima" : "Crea dump",
+    danger: false,
+    dry: app.dryRun,
+    rows: [
+      { label: "Esporta da", value: `${engineLabel(c.engine)} · ${connTarget(c)}` },
+      { label: "File di destinazione", value: app.dumpPath, mono: true },
+      { label: "Metodo", value: preferLabel(app.prefer) },
+    ],
+    notes: app.dryRun
+      ? ["Anteprima: nessun file verrà scritto."]
+      : [
+          "Il dump legge soltanto dal database: operazione sicura per la sorgente.",
+          "Se il file esiste già verrà sovrascritto.",
+        ],
+  };
+  pendingRun = runDump;
+}
+
+// Import: ESEGUE lo script sul database. Modifica dati → conferma "danger".
+export function requestImport() {
+  const c = connById(app.sel.import);
+  if (!c) return needConn("Seleziona una connessione salvata.", "import");
+  app.confirm = {
+    title: app.dryRun ? "Anteprima dell'import" : "Confermi l'import?",
+    cta: app.dryRun ? "Esegui anteprima" : "Importa dump",
+    danger: !app.dryRun,
+    dry: app.dryRun,
+    rows: [
+      { label: "Scrive su", value: `${engineLabel(c.engine)} · ${connTarget(c)}`, danger: !app.dryRun },
+      { label: "File dump", value: app.importPath, mono: true },
+      { label: "Metodo", value: preferLabel(app.prefer) },
+    ],
+    notes: app.dryRun
+      ? ["Anteprima: nessuna modifica verrà applicata."]
+      : ["L'import esegue lo script SUL database di destinazione, modificandolo."],
+  };
+  pendingRun = runImport;
+}
+
+// Clone: la destinazione viene modificata. Il testo si adatta a data-only,
+// append (SQL Server) e masking, così sai esattamente cosa succederà.
+export function requestClone() {
+  const src = connById(app.sel.cloneSrc);
+  const dst = connById(app.sel.cloneDst);
+  if (!src || !dst) return needConn("Seleziona sorgente e destinazione.", "clone");
+  const dataOnly = app.cloneOpts.dataOnly;
+  const maskN = app.cloneOpts.mask.filter((m) => m.table.trim() && m.column.trim()).length;
+
+  const notes = [];
+  if (app.dryRun) {
+    notes.push("Anteprima: la destinazione non verrà modificata.");
+  } else if (dataOnly) {
+    notes.push(
+      src.engine === "sqlserver"
+        ? "Solo dati (append): lo schema resta, i dati vengono AGGIUNTI a quelli esistenti."
+        : "Solo dati: lo schema della destinazione resta, i dati vengono SOSTITUITI.",
+    );
+  } else {
+    notes.push("La destinazione verrà RISCRITTA: le tabelle esistenti vengono ricreate.");
+  }
+  if (maskN) notes.push(`${maskN} regol${maskN === 1 ? "a" : "e"} di mascheramento (forza il metodo puro Rust).`);
+
+  app.confirm = {
+    title: app.dryRun ? "Anteprima della clonazione" : "Confermi la clonazione?",
+    cta: app.dryRun ? "Esegui anteprima" : dataOnly ? "Sincronizza dati" : "Clona database",
+    danger: !app.dryRun,
+    dry: app.dryRun,
+    rows: [
+      { label: "Sorgente", value: `${engineLabel(src.engine)} · ${connTarget(src)}` },
+      { label: "Destinazione", value: `${engineLabel(dst.engine)} · ${connTarget(dst)}`, danger: !app.dryRun },
+      { label: "Modalità", value: dataOnly ? "solo dati" : "schema + dati" },
+      { label: "Metodo", value: preferLabel(app.prefer) },
+    ],
+    notes,
+  };
+  pendingRun = runClone;
+}

@@ -1,5 +1,5 @@
 <script>
-  import { app, runImport } from "../lib/state.svelte.js";
+  import { app, requestImport } from "../lib/state.svelte.js";
   import { pickOpenPath } from "../lib/api.js";
   import ConnPicker from "./ConnPicker.svelte";
   import ResultPanel from "./ResultPanel.svelte";
@@ -30,7 +30,7 @@
 
       <div class="actions-row">
         <PreferPicker />
-        <button class="btn primary" disabled={app.busy || !ready} onclick={runImport}>
+        <button class="btn primary" disabled={app.busy || !ready} onclick={requestImport}>
           Importa dump
         </button>
       </div>

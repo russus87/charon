@@ -142,6 +142,7 @@
     margin-top: 6px;
   }
   .nav-item {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -154,20 +155,50 @@
     font-weight: 500;
     text-align: left;
     width: 100%;
-    transition: background 0.13s ease, color 0.13s ease;
+    transition: background 0.13s ease, color 0.13s ease, transform 0.12s ease;
+  }
+  /* Barretta d'accento a sinistra: cresce quando la voce è attiva. */
+  .nav-item::before {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    width: 3px;
+    height: 0;
+    border-radius: 3px;
+    background: var(--green-500);
+    transform: translateY(-50%);
+    transition: height 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.2);
   }
   .nav-item:hover {
     background: rgba(255, 255, 255, 0.07);
     color: #fff;
+  }
+  .nav-item:not(.active):hover {
+    transform: translateX(2px);
   }
   .nav-item.active {
     background: rgba(255, 255, 255, 0.14);
     color: #fff;
     font-weight: 600;
   }
+  .nav-item.active::before {
+    height: 18px;
+  }
   .nav-item svg {
     opacity: 0.9;
     flex: 0 0 auto;
+    transition: transform 0.12s ease;
+  }
+  .nav-item:hover svg {
+    transform: scale(1.08);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .nav-item,
+    .nav-item::before,
+    .nav-item svg {
+      transition: none;
+    }
   }
 
   .side-foot {

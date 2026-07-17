@@ -1,5 +1,5 @@
 <script>
-  import { app, runDump, connById } from "../lib/state.svelte.js";
+  import { app, requestDump, connById } from "../lib/state.svelte.js";
   import { pickSavePath } from "../lib/api.js";
   import ConnPicker from "./ConnPicker.svelte";
   import ResultPanel from "./ResultPanel.svelte";
@@ -27,7 +27,7 @@
 
       <div class="actions-row">
         <PreferPicker />
-        <button class="btn primary" disabled={app.busy || !ready} onclick={runDump}>
+        <button class="btn primary" disabled={app.busy || !ready} onclick={requestDump}>
           Crea dump
         </button>
       </div>

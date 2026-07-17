@@ -9,6 +9,7 @@
   import Compare from "./components/Compare.svelte";
   import Tools from "./components/Tools.svelte";
   import ResultModal from "./components/ResultModal.svelte";
+  import ConfirmModal from "./components/ConfirmModal.svelte";
 
   onMount(() => {
     loadReports();
@@ -50,7 +51,8 @@
     {/key}
   </main>
 
-  <!-- Riepilogo a fine operazione: sopra tutto, chiuso con OK/Esc/backdrop. -->
+  <!-- Conferma PRIMA dell'operazione, riepilogo DOPO: entrambi sopra tutto. -->
+  <ConfirmModal />
   <ResultModal />
 </div>
 

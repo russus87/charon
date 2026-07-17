@@ -1,7 +1,7 @@
 <script>
   import {
     app,
-    runClone,
+    requestClone,
     connById,
     engineLabel,
     addMaskRule,
@@ -95,7 +95,7 @@
 
     <div class="card bar">
       <PreferPicker />
-      <button class="btn primary" disabled={app.busy || !ready} onclick={runClone}>
+      <button class="btn primary" disabled={app.busy || !ready} onclick={requestClone}>
         {opts.dataOnly ? "Sincronizza dati" : "Clona database"}
       </button>
     </div>

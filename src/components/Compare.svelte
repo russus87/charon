@@ -1,5 +1,6 @@
 <script>
-  import { app, runCompare, rowsDiffer, tableAligned } from "../lib/state.svelte.js";
+  import { app, runCompare, rowsDiffer, tableAligned, connById } from "../lib/state.svelte.js";
+  import { exportDiff, pickReportPath } from "../lib/api.js";
   import ConnPicker from "./ConnPicker.svelte";
 
   // Vista "Compare": diff fra due database, in stile git.
@@ -27,6 +28,24 @@
   let open = $state({}); // nome tabella → dettaglio colonne espanso
   const toggle = (n) => (open[n] = !open[n]);
   const rows = (n) => (n == null ? "—" : n.toLocaleString("it-IT"));
+
+  let exporting = $state(false);
+  // Ri-esegue il confronto lato backend e ne salva il report (html/json).
+  async function saveReport(format) {
+    const src = connById(app.sel.cmpSrc);
+    const dst = connById(app.sel.cmpDst);
+    if (!src || !dst) return;
+    const out = await pickReportPath(format);
+    if (!out) return;
+    exporting = true;
+    try {
+      await exportDiff($state.snapshot(src), $state.snapshot(dst), format, out);
+    } catch (e) {
+      app.diffErr = String(e);
+    } finally {
+      exporting = false;
+    }
+  }
 </script>
 
 <div class="cmp">
@@ -60,10 +79,20 @@
           <span class="arrow">↔</span>
           <code class="side dst">{diff.target_label}</code>
         </div>
-        <label class="toggle-aligned">
-          <input type="checkbox" bind:checked={showAligned} />
-          Mostra anche le tabelle allineate
-        </label>
+        <div class="res-actions">
+          <label class="toggle-aligned">
+            <input type="checkbox" bind:checked={showAligned} />
+            Mostra anche le tabelle allineate
+          </label>
+          <div class="exports">
+            <button class="btn ghost sm" disabled={exporting} onclick={() => saveReport("html")}>
+              Esporta HTML
+            </button>
+            <button class="btn ghost sm" disabled={exporting} onclick={() => saveReport("json")}>
+              Esporta JSON
+            </button>
+          </div>
+        </div>
       </div>
 
       {#if diffCount === 0}
@@ -180,6 +209,16 @@
   }
   .arrow {
     color: var(--text-faint);
+  }
+  .res-actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .exports {
+    display: flex;
+    gap: 6px;
   }
   .toggle-aligned {
     display: flex;

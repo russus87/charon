@@ -26,6 +26,17 @@ export const cloneDatabase = (source, target, prefer, options, dryRun) =>
 export const compareDatabases = (source, target) =>
   invoke("compare_databases", { source, target });
 
+// Ri-esegue il confronto e ne scrive il report su file (format: "html" | "json").
+export const exportDiff = (source, target, format, out) =>
+  invoke("export_diff", { source, target, format, out });
+
+// Percorso di salvataggio per il report del confronto.
+export const pickReportPath = (format) =>
+  save({
+    defaultPath: `compare.${format}`,
+    filters: [{ name: format.toUpperCase(), extensions: [format] }],
+  });
+
 export const oracleLoad = (conn, packageDir, dryRun) =>
   invoke("oracle_load", { conn, packageDir, dryRun });
 

@@ -142,6 +142,25 @@ async fn compare_databases(
     run_blocking_res(app, move || ops::compare(&source, &target)).await
 }
 
+/// Ri-esegue il confronto e scrive il report su file (`format`: "html" o "json").
+/// Sola lettura sui database.
+#[tauri::command]
+async fn export_diff(
+    app: AppHandle,
+    source: Connection,
+    target: Connection,
+    format: String,
+    out: String,
+) -> std::result::Result<(), String> {
+    run_blocking_res(app, move || {
+        let diff = ops::compare(&source, &target)?;
+        let content = if format == "html" { diff.to_html() } else { diff.to_json() };
+        std::fs::write(&out, content)?;
+        Ok(())
+    })
+    .await
+}
+
 /// Elenco delle connessioni salvate.
 #[tauri::command]
 fn list_connections() -> Vec<ConnectionProfile> {
@@ -180,6 +199,7 @@ pub fn run() {
             import_dump,
             clone_database,
             compare_databases,
+            export_diff,
             oracle_load,
             oracle_setup,
             list_connections,

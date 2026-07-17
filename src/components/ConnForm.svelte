@@ -1,5 +1,5 @@
 <script>
-  import { setEngine, toggleSsh } from "../lib/state.svelte.js";
+  import { setEngine, toggleSsh, suggestNameFromFile } from "../lib/state.svelte.js";
   import { pickSqliteFile, pickSqliteNewFile } from "../lib/api.js";
 
   // `conn` e' l'oggetto reattivo dello stato: mutarne i campi aggiorna tutto.
@@ -19,15 +19,20 @@
   let dbLabel = $derived(conn.engine === "oracle" ? "Service name" : "Database");
 
   // Sceglie un db esistente, oppure il percorso di uno nuovo (che verrà creato
-  // al primo clone/import: SQLite genera il file da sé).
+  // al primo clone/import: SQLite genera il file da sé). In entrambi i casi, se
+  // la connessione non ha ancora un nome, lo proponiamo dal file.
   async function browse() {
     const p = await pickSqliteFile();
-    if (p) conn.database = p;
+    if (!p) return;
+    conn.database = p;
+    suggestNameFromFile(p);
   }
 
   async function browseNew() {
     const p = await pickSqliteNewFile();
-    if (p) conn.database = p;
+    if (!p) return;
+    conn.database = p;
+    suggestNameFromFile(p);
   }
 </script>
 

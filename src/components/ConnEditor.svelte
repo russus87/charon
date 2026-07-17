@@ -6,6 +6,7 @@
     deleteEditing,
     duplicateEditing,
     cancelEdit,
+    isFileEngine,
   } from "../lib/state.svelte.js";
   import ConnForm from "./ConnForm.svelte";
   import ResultPanel from "./ResultPanel.svelte";
@@ -13,25 +14,29 @@
 
   let e = $derived(app.editing);
   let canSave = $derived(!!e && e.name.trim().length > 0);
+  // Un motore su file non ha password: l'avviso non c'entra nulla.
+  let isFile = $derived(!!e && isFileEngine(e.connection.engine));
 </script>
 
 <div class="workspace">
   <div class="left">
     <button class="btn ghost sm back" onclick={cancelEdit}>← Tutte le connessioni</button>
 
-    <div class="card name-card">
+    <div class="card name-card" class:missing={!canSave}>
       <label class="name-field">
-        <span>Nome connessione</span>
+        <span>Nome connessione {#if !canSave}<em>— obbligatorio</em>{/if}</span>
         <input bind:value={app.editing.name} placeholder="es. Prod RDS (Oracle)" autocomplete="off" />
       </label>
     </div>
 
     <ConnForm conn={app.editing.connection} title="Parametri" />
 
-    <p class="warn-note">
-      ⚠️ La password viene salvata <b>in chiaro</b> nel file di configurazione locale
-      (<code>~/.config/charon/connections.json</code>).
-    </p>
+    {#if !isFile}
+      <p class="warn-note">
+        ⚠️ La password viene salvata <b>in chiaro</b> nel file di configurazione locale
+        (<code>~/.config/charon/connections.json</code>).
+      </p>
+    {/if}
 
     <div class="card bar">
       <PreferPicker />
@@ -46,6 +51,11 @@
             Duplica
           </button>
           <button class="btn danger" disabled={app.busy} onclick={deleteEditing}>Elimina</button>
+        {/if}
+        <!-- Un pulsante disabilitato senza spiegazione è un vicolo cieco: diciamo
+             cosa manca invece di lasciare indovinare. -->
+        {#if !canSave}
+          <span class="need-name">↳ serve un nome per salvare</span>
         {/if}
         <button class="btn primary" disabled={app.busy || !canSave} onclick={saveEditing}>
           Salva
@@ -63,6 +73,19 @@
   }
   .name-card {
     padding: 16px 18px;
+  }
+  /* Il nome è l'unico campo obbligatorio: quando manca lo si deve vedere. */
+  .name-card.missing {
+    border-color: var(--warn, #b7791f);
+  }
+  .name-field em {
+    font-style: normal;
+    color: var(--warn, #b7791f);
+  }
+  .need-name {
+    align-self: center;
+    font-size: 12.5px;
+    color: var(--warn, #b7791f);
   }
   .name-field {
     display: flex;

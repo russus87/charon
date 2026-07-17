@@ -86,6 +86,16 @@ function newId() {
   return `c_${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}`;
 }
 
+// Se la connessione in modifica non ha ancora un nome, propone quello del file
+// (senza estensione): per un motore su file è l'etichetta naturale, ed evita di
+// ritrovarsi il pulsante Salva disabilitato senza capire perché.
+export function suggestNameFromFile(path) {
+  if (!app.editing || app.editing.name.trim()) return;
+  const base = String(path).split(/[\\/]/).pop() ?? "";
+  const name = base.replace(/\.(db|sqlite3?|db3)$/i, "");
+  if (name) app.editing.name = name;
+}
+
 // Riepilogo leggibile di una connessione. Per i motori su file è il percorso:
 // mostrare "utente@host:0/percorso" sarebbe fuorviante.
 export function connTarget(c) {

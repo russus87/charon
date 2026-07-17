@@ -249,6 +249,69 @@ fn data_only_e_masking_sono_rifiutati_esplicitamente() {
     );
 }
 
+/// Clonare verso un file **inesistente** deve crearlo: è il caso normale quando
+/// si prepara un database nuovo dalla UI con "Nuovo…".
+#[test]
+fn clone_crea_il_file_di_destinazione_se_manca() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let src = seeded(d, "src", Prefer::Rust);
+    let dst_path = d.join("nuovo.db");
+    assert!(!dst_path.exists(), "il file non deve esistere prima");
+
+    ok(
+        ops::clone(&src, &conn(&dst_path), Prefer::Rust, &CloneOptions::default(), false),
+        "clone verso file nuovo",
+    );
+    assert!(dst_path.exists(), "il clone non ha creato il file");
+
+    let a = dump_to_string(&src, &d.join("a.sql"), Prefer::Rust);
+    let b = dump_to_string(&conn(&dst_path), &d.join("b.sql"), Prefer::Rust);
+    assert_eq!(a, b, "il db appena creato non riproduce la sorgente");
+}
+
+/// Anche l'import verso un file inesistente lo crea (SQLite genera il file al
+/// primo accesso in scrittura).
+#[test]
+fn import_crea_il_file_se_manca() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let sql = d.join("seed.sql");
+    write(&sql, SEED);
+    let db_path = d.join("da_zero.db");
+    assert!(!db_path.exists());
+
+    ok(
+        ops::import(&conn(&db_path), &sql.display().to_string(), Prefer::Rust, false),
+        "import su file nuovo",
+    );
+    assert!(db_path.exists(), "l'import non ha creato il file");
+    assert!(ops::test_connection(&conn(&db_path), Prefer::Rust).ok);
+}
+
+/// "Prova connessione" non deve MAI creare il file: creerebbe un db vuoto come
+/// effetto collaterale di una semplice verifica. Vale per entrambi i metodi.
+#[test]
+fn test_connessione_non_crea_il_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+
+    for prefer in [Prefer::Rust, Prefer::Native] {
+        if prefer == Prefer::Native && !charon_core::sqlite::native_available() {
+            continue;
+        }
+        let p = d.join(format!("mai_creato_{prefer:?}.db"));
+        let r = ops::test_connection(&conn(&p), prefer);
+        assert!(!r.ok, "{prefer:?}: un file inesistente è stato accettato");
+        assert!(
+            r.message.contains("non esiste ancora"),
+            "{prefer:?}: messaggio poco chiaro: {}",
+            r.message
+        );
+        assert!(!p.exists(), "{prefer:?}: la prova ha CREATO il file");
+    }
+}
+
 /// Il test di connessione deve riuscire su un file valido e fallire su uno che
 /// non è un database SQLite.
 #[test]

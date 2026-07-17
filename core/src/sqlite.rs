@@ -32,6 +32,24 @@ fn reject_unsupported_opts(opts: &CloneOptions) -> Result<()> {
     Ok(())
 }
 
+/// "Prova connessione" non deve **creare** nulla: il CLI `sqlite3` invece
+/// genererebbe un file vuoto al primo accesso, e il driver Rust (read-only)
+/// fallirebbe con un errore oscuro. Diciamo la verità: il file non c'è ancora,
+/// ma come destinazione va benissimo perché lo crea il clone/import.
+fn require_existing(conn: &Connection) -> Result<()> {
+    let path = db_path(conn);
+    if path.trim().is_empty() {
+        return Err(Error::Conn("nessun file indicato".into()));
+    }
+    if !std::path::Path::new(path).exists() {
+        return Err(Error::Conn(format!(
+            "il file {path} non esiste ancora: va bene come destinazione (lo creerà \
+             il clone/import), ma non c'è niente da leggere"
+        )));
+    }
+    Ok(())
+}
+
 /// Clonare un file su se stesso lo distruggerebbe: meglio fermarsi prima.
 fn reject_same_file(src: &Connection, dst: &Connection) -> Result<()> {
     let (a, b) = (db_path(src), db_path(dst));
@@ -199,6 +217,8 @@ pub fn native_clone(
 
 pub fn native_test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {
     let exe = find_tool("sqlite3").ok_or_else(|| Error::ToolMissing("sqlite3".into()))?;
+    // Senza questo il CLI creerebbe un db vuoto solo per "provare" la connessione.
+    require_existing(conn)?;
     let path = db_path(conn);
     let o = Command::new(&exe)
         .arg(path)
@@ -449,6 +469,8 @@ mod rustimpl {
     }
 
     pub fn test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {
+        // Messaggio esplicito invece dell'oscuro "unable to open database file".
+        super::require_existing(conn)?;
         let path = db_path(conn);
         let c = open_ro(path)?;
         let v: String = c

@@ -1,6 +1,6 @@
 <script>
   import { setEngine, toggleSsh } from "../lib/state.svelte.js";
-  import { pickSqliteFile } from "../lib/api.js";
+  import { pickSqliteFile, pickSqliteNewFile } from "../lib/api.js";
 
   // `conn` e' l'oggetto reattivo dello stato: mutarne i campi aggiorna tutto.
   let { conn, title = "Connessione" } = $props();
@@ -18,8 +18,15 @@
   // Per Oracle il campo "database" e' il service name.
   let dbLabel = $derived(conn.engine === "oracle" ? "Service name" : "Database");
 
+  // Sceglie un db esistente, oppure il percorso di uno nuovo (che verrà creato
+  // al primo clone/import: SQLite genera il file da sé).
   async function browse() {
     const p = await pickSqliteFile();
+    if (p) conn.database = p;
+  }
+
+  async function browseNew() {
+    const p = await pickSqliteNewFile();
     if (p) conn.database = p;
   }
 </script>
@@ -48,9 +55,14 @@
         <input bind:value={conn.database} placeholder="/percorso/al/mio.db" autocomplete="off" />
       </label>
       <button class="btn ghost" onclick={browse}>Sfoglia…</button>
+      <button class="btn ghost" onclick={browseNew} title="Scegli il percorso di un database nuovo">
+        Nuovo…
+      </button>
     </div>
     <p class="file-hint">
       SQLite è un file, non un server: non servono host, utente o password.
+      Con <b>Nuovo…</b> puoi indicare un file che non esiste ancora: verrà creato
+      al primo clone o import.
     </p>
   {:else}
     <div class="grid">

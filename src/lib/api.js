@@ -44,8 +44,12 @@ export const pickOpenPath = () =>
   open({ multiple: false, filters: [{ name: "Dump", extensions: ["sql", "dmp"] }] });
 
 // Sceglie il file di un database SQLite (per SQLite la "connessione" è un file).
-export const pickSqliteFile = () =>
-  open({
-    multiple: false,
-    filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3", "db3"] }],
-  });
+const SQLITE_FILTER = [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3", "db3"] }];
+
+export const pickSqliteFile = () => open({ multiple: false, filters: SQLITE_FILTER });
+
+// Sceglie il percorso di un database SQLite **nuovo**: il dialogo di apertura
+// mostra solo file esistenti, quindi per crearne uno serve quello di salvataggio.
+// Il file vero lo crea poi il clone/import (SQLite lo genera al primo accesso).
+export const pickSqliteNewFile = () =>
+  save({ defaultPath: "nuovo.db", filters: SQLITE_FILTER });

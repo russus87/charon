@@ -31,7 +31,7 @@
     <div>
       <h2>Strumenti rilevati</h2>
       <p>
-        Charon usa i <strong>tool nativi</strong> del database se li trova nel PATH
+        Database Studio usa i <strong>tool nativi</strong> del database se li trova nel PATH
         (massima fedeltà); altrimenti ripiega su un <strong>fallback puro Rust</strong>
         best-effort. Qui vedi cosa è disponibile sulla tua macchina.
       </p>
@@ -105,7 +105,7 @@
               {oraSetup.busy ? "Configuro…" : "Configura Instant Client…"}
             </button>
             <span class="ora-hint">
-              Scegli lo <code>.zip</code> "Basic/Basic Lite" scaricato da Oracle: Charon
+              Scegli lo <code>.zip</code> "Basic/Basic Lite" scaricato da Oracle: Database Studio
               lo scompatta in una cartella utente (nessun admin) e lo aggancia.
             </span>
             {#if oraSetup.msg}<p class="ora-msg">{oraSetup.msg}</p>{/if}

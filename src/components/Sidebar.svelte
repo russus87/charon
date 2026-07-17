@@ -39,7 +39,7 @@
 
 <aside class="sidebar">
   <div class="brand">
-    <div class="logo" title="Charon — il traghettatore">
+    <div class="logo" title="Database Studio">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
            stroke-linecap="round" stroke-linejoin="round">
         <path d="M3 15c1.5 1 3 1 4.5 0s3-1 4.5 0 3 1 4.5 0 3-1 4.5 0" />
@@ -48,8 +48,8 @@
       </svg>
     </div>
     <div class="brand-text">
-      <strong>Charon</strong>
-      <span>dump · import · clona</span>
+      <strong>Database Studio</strong>
+      <span>dump · clona · confronta</span>
     </div>
   </div>
 
@@ -82,7 +82,7 @@
     </button>
 
     <div class="app-meta">
-      <span class="ver">Charon v{VERSION}</span>
+      <span class="ver">Database Studio v{VERSION}</span>
       <button class="site" onclick={() => openUrl("https://russus.it")} title="Apri russus.it">
         russus.it ↗
       </button>

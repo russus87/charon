@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Charon",
+  "productName": "Database Studio",
   "mainBinaryName": "charon-desktop",
   "version": "0.2.1",
   "identifier": "com.charon.app",
@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "Charon",
+        "title": "Database Studio",
         "width": 1240,
         "height": 820,
         "minWidth": 960,

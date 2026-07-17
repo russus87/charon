@@ -24,7 +24,7 @@
     import: { comp: Import, title: "Importa", sub: "Carica un dump dentro un database." },
     clone: { comp: Clone, title: "Clona", sub: "Copia schema e dati da una sorgente a una destinazione." },
     compare: { comp: Compare, title: "Compare", sub: "Confronta due database e vedi cosa differisce, in stile diff." },
-    tools: { comp: Tools, title: "Strumenti", sub: "Cosa è disponibile sulla macchina e come si connette Charon." },
+    tools: { comp: Tools, title: "Strumenti", sub: "Cosa è disponibile sulla macchina e come si connette Database Studio." },
   };
 
   let current = $derived(views[app.view] ?? views.connection);
@@ -39,7 +39,7 @@
       <div class="page fade-in">
         <div class="page-head">
           <div>
-            <div class="breadcrumb">Charon <span class="sep">/</span> <span class="cur">{current.title}</span></div>
+            <div class="breadcrumb">Database Studio <span class="sep">/</span> <span class="cur">{current.title}</span></div>
             <h1 class="title">{current.title}</h1>
             <p class="subtitle">{current.sub}</p>
           </div>

@@ -9,7 +9,6 @@
     MASK_KINDS,
   } from "../lib/state.svelte.js";
   import ConnPicker from "./ConnPicker.svelte";
-  import ResultPanel from "./ResultPanel.svelte";
   import PreferPicker from "./PreferPicker.svelte";
 
   let src = $derived(connById(app.sel.cloneSrc));
@@ -100,8 +99,6 @@
       </button>
     </div>
   </div>
-
-  <ResultPanel />
 </div>
 
 <style>

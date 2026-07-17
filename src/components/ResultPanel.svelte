@@ -1,42 +1,16 @@
 <script>
   import { app, toggleLog } from "../lib/state.svelte.js";
 
-  // Pannello "console": esito + metodo usato dell'ultima operazione. Il log
-  // dettagliato è collassato di default: l'utente lo apre solo se gli serve.
+  // Console ancorata in basso: barra sottile che si apre verso l'alto quando
+  // serve. Il log dettagliato resta collassato di default.
   let r = $derived(app.result);
   let methodLabel = $derived(
     r?.method === "rust" ? "puro Rust (best-effort)" : "tool nativi",
   );
-  // Numero di righe di log disponibili, per invogliare l'apertura quando servono.
   let lines = $derived(app.busy ? app.liveLog.length : (r?.log?.length ?? 0));
 </script>
 
-<div class="panel card" class:collapsed={!app.showLog}>
-  <div class="head">
-    <h3>Console</h3>
-    {#if r}
-      <span class="badge {r.ok ? 'ok' : 'err'}">{r.ok ? "OK" : "Errore"}</span>
-    {/if}
-    <button class="btn ghost sm toggle" onclick={toggleLog} aria-expanded={app.showLog}>
-      {app.showLog ? "Nascondi log ▾" : `Mostra log${lines ? ` (${lines})` : ""} ▸`}
-    </button>
-  </div>
-
-  {#if r}
-    <div class="meta">
-      <span class="badge brand">metodo: {methodLabel}</span>
-      {#if r.artifact}
-        <span class="path" title={r.artifact}>📄 {r.artifact}</span>
-      {/if}
-    </div>
-    <p class="msg" class:err={!r.ok}>{r.message}</p>
-  {/if}
-
-  <!-- Con la console chiusa serve comunque un segnale che qualcosa sta girando. -->
-  {#if app.busy && !app.showLog}
-    <div class="mini spinner">Operazione in corso…</div>
-  {/if}
-
+<div class="console" class:open={app.showLog}>
   {#if app.showLog}
     <div class="log">
       {#if app.busy}
@@ -56,73 +30,86 @@
       {/if}
     </div>
   {/if}
+
+  <div class="bar">
+    <span class="title">Console</span>
+    {#if r}
+      <span class="badge {r.ok ? 'ok' : 'err'}">{r.ok ? "OK" : "Errore"}</span>
+      <span class="badge brand">{methodLabel}</span>
+      <span class="msg" class:err={!r.ok} title={r.message}>{r.message}</span>
+    {:else if !app.busy}
+      <span class="idle">Nessuna operazione ancora eseguita.</span>
+    {/if}
+    {#if app.busy}
+      <span class="mini spinner">Operazione in corso…</span>
+    {/if}
+    <button class="btn ghost sm toggle" onclick={toggleLog} aria-expanded={app.showLog}>
+      {app.showLog ? "Nascondi log ▾" : `Mostra log${lines ? ` (${lines})` : ""} ▴`}
+    </button>
+  </div>
 </div>
 
 <style>
-  .panel {
-    padding: 18px;
+  .console {
+    position: fixed;
+    left: var(--sidebar-w);
+    right: 0;
+    bottom: 0;
+    z-index: 30;
     display: flex;
-    flex-direction: column;
-    min-height: 0;
-    height: 100%;
+    flex-direction: column; /* log sopra, barra sotto → si apre verso l'alto */
+    max-height: 72vh;
+    background: var(--surface);
+    border-top: 1px solid var(--border-strong);
+    box-shadow: 0 -8px 26px rgba(16, 40, 30, 0.12);
   }
-  /* Con il log chiuso il pannello non deve occupare tutta la colonna. */
-  .panel.collapsed {
-    height: auto;
-    align-self: flex-start;
-  }
-  .head {
+  .bar {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-bottom: 12px;
+    gap: 12px;
+    padding: 10px 18px 10px 30px;
+    flex: none;
   }
-  h3 {
-    margin: 0;
-    font-size: 16px;
+  .title {
+    font-size: 14px;
+    font-weight: 700;
+    flex: none;
+  }
+  .msg {
+    font-size: 13px;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .msg.err {
+    color: var(--err);
+  }
+  .idle {
+    font-size: 12.5px;
+    color: var(--text-faint);
+  }
+  .mini {
+    font-size: 12.5px;
+    color: var(--text-dim);
   }
   .toggle {
     margin-left: auto;
     flex: none;
   }
-  .mini {
-    font-size: 13px;
-    color: var(--text-dim, var(--ink-soft));
-  }
-  .meta {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin-bottom: 8px;
-  }
-  .path {
-    font-size: 12px;
-    color: var(--ink-soft);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 100%;
-  }
-  .msg {
-    margin: 0 0 12px;
-    font-size: 13.5px;
-    color: var(--ink);
-  }
-  .msg.err {
-    color: var(--err);
-  }
   .log {
     flex: 1;
-    min-height: 160px;
+    min-height: 0;
+    height: 46vh;
     overflow: auto;
     background: #0e1220;
     color: #cdd4e6;
-    border-radius: 12px;
-    padding: 14px;
+    padding: 14px 30px;
     font-family: var(--mono);
     font-size: 12.5px;
     line-height: 1.6;
+    border-bottom: 1px solid #1c2233;
   }
   .line {
     white-space: pre-wrap;
@@ -131,11 +118,16 @@
   .line.cmd {
     color: #8bd5a0;
   }
-  .empty,
-  .spinner {
+  .empty {
     color: #6b7390;
     font-family: var(--font);
     font-size: 13px;
+  }
+  .spinner {
+    color: #9aa6d8;
+  }
+  .mini.spinner {
+    color: var(--text-dim);
   }
   .spinner::before {
     content: "";
@@ -152,6 +144,16 @@
   @keyframes spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner::before {
+      animation: none;
+    }
+  }
+  @media (max-width: 980px) {
+    .console {
+      left: 0;
     }
   }
 </style>

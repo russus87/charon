@@ -10,6 +10,7 @@
   import Tools from "./components/Tools.svelte";
   import ResultModal from "./components/ResultModal.svelte";
   import ConfirmModal from "./components/ConfirmModal.svelte";
+  import ResultPanel from "./components/ResultPanel.svelte";
 
   onMount(() => {
     loadReports();
@@ -51,6 +52,9 @@
     {/key}
   </main>
 
+  <!-- Console ancorata in basso, comune a tutte le viste. -->
+  <ResultPanel />
+
   <!-- Conferma PRIMA dell'operazione, riepilogo DOPO: entrambi sopra tutto. -->
   <ConfirmModal />
   <ResultModal />
@@ -65,7 +69,8 @@
   }
   .content {
     overflow-y: auto;
-    padding: 22px 30px 30px;
+    /* spazio in fondo per la barra Console ancorata (collassata ~52px) */
+    padding: 22px 30px 64px;
     min-width: 0;
   }
   .page {

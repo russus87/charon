@@ -2,7 +2,6 @@
   import { app, requestImport } from "../lib/state.svelte.js";
   import { pickOpenPath } from "../lib/api.js";
   import ConnPicker from "./ConnPicker.svelte";
-  import ResultPanel from "./ResultPanel.svelte";
   import PreferPicker from "./PreferPicker.svelte";
 
   async function choose() {
@@ -36,8 +35,6 @@
       </div>
     </div>
   </div>
-
-  <ResultPanel />
 </div>
 
 <style>

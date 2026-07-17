@@ -9,7 +9,6 @@
     isFileEngine,
   } from "../lib/state.svelte.js";
   import ConnForm from "./ConnForm.svelte";
-  import ResultPanel from "./ResultPanel.svelte";
   import PreferPicker from "./PreferPicker.svelte";
 
   let e = $derived(app.editing);
@@ -63,8 +62,6 @@
       </div>
     </div>
   </div>
-
-  <ResultPanel />
 </div>
 
 <style>

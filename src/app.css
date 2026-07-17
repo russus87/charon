@@ -202,25 +202,14 @@ textarea {
   color: #55645c;
 }
 
-/* --- area di lavoro a due colonne: form a sinistra, console a destra --- */
+/* --- area di lavoro: form a piena larghezza (la Console è ancorata in basso) --- */
 .workspace {
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  gap: 18px;
-  height: 100%;
-  min-height: 0;
+  display: block;
 }
 .workspace .left {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: 0;
-}
-@media (max-width: 980px) {
-  .workspace {
-    grid-template-columns: 1fr;
-    height: auto;
-  }
 }
 
 .actions-row {

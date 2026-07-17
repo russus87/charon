@@ -1,13 +1,15 @@
 <script>
-  import { app, engineLabel, newConnection, editConnection } from "../lib/state.svelte.js";
+  import {
+    app,
+    engineLabel,
+    newConnection,
+    editConnection,
+    connTarget,
+  } from "../lib/state.svelte.js";
   import ConnEditor from "./ConnEditor.svelte";
 
-  // Riepilogo host per la card della lista.
-  function target(c) {
-    const s = c.connection;
-    const base = `${s.user ? s.user + "@" : ""}${s.host}:${s.port}/${s.database}`;
-    return s.ssh ? `${base} (via SSH ${s.ssh.host})` : base;
-  }
+  // Riepilogo per la card della lista (percorso file per i motori su file).
+  const target = (c) => connTarget(c.connection);
 </script>
 
 {#if app.editing}

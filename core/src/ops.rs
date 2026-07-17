@@ -2,11 +2,16 @@
 //! verso il motore giusto. E' l'unico punto che la UI deve conoscere.
 
 use crate::model::*;
-use crate::{mssql, oracle, postgres, tunnel, Error, Result};
+use crate::{mssql, oracle, postgres, sqlite, tunnel, Error, Result};
 
 /// Riepilogo di cosa e' disponibile sulla macchina, per tutti i motori.
 pub fn detect_all() -> Vec<EngineReport> {
-    vec![postgres::report(), oracle::report(), mssql::report()]
+    vec![
+        postgres::report(),
+        oracle::report(),
+        mssql::report(),
+        sqlite::report(),
+    ]
 }
 
 /// (nativo_disponibile, rust_disponibile) per un motore.
@@ -15,6 +20,7 @@ fn availability(engine: Engine) -> (bool, bool) {
         Engine::Postgres => (postgres::native_available(), postgres::rust_available()),
         Engine::Sqlserver => (mssql::native_available(), mssql::rust_available()),
         Engine::Oracle => (oracle::native_available(), oracle::rust_available()),
+        Engine::Sqlite => (sqlite::native_available(), sqlite::rust_available()),
     }
 }
 
@@ -101,6 +107,8 @@ fn dispatch_dump(
         (Engine::Sqlserver, Method::Rust) => mssql::rust_dump(conn, out, dry, log),
         (Engine::Oracle, Method::Native) => oracle::native_dump(conn, out, dry, log),
         (Engine::Oracle, Method::Rust) => oracle::rust_dump(conn, out, dry, log),
+        (Engine::Sqlite, Method::Native) => sqlite::native_dump(conn, out, dry, log),
+        (Engine::Sqlite, Method::Rust) => sqlite::rust_dump(conn, out, dry, log),
     }
 }
 
@@ -118,6 +126,8 @@ fn dispatch_import(
         (Engine::Sqlserver, Method::Rust) => mssql::rust_import(conn, input, dry, log),
         (Engine::Oracle, Method::Native) => oracle::native_import(conn, input, dry, log),
         (Engine::Oracle, Method::Rust) => oracle::rust_import(conn, input, dry, log),
+        (Engine::Sqlite, Method::Native) => sqlite::native_import(conn, input, dry, log),
+        (Engine::Sqlite, Method::Rust) => sqlite::rust_import(conn, input, dry, log),
     }
 }
 
@@ -136,6 +146,8 @@ fn dispatch_clone(
         (Engine::Sqlserver, Method::Rust) => mssql::rust_clone(src, dst, opts, dry, log),
         (Engine::Oracle, Method::Native) => oracle::native_clone(src, dst, opts, dry, log),
         (Engine::Oracle, Method::Rust) => oracle::rust_clone(src, dst, opts, dry, log),
+        (Engine::Sqlite, Method::Native) => sqlite::native_clone(src, dst, opts, dry, log),
+        (Engine::Sqlite, Method::Rust) => sqlite::rust_clone(src, dst, opts, dry, log),
     }
 }
 
@@ -147,6 +159,8 @@ fn dispatch_test(conn: &Connection, m: Method, log: &mut Vec<String>) -> Result<
         (Engine::Sqlserver, Method::Rust) => mssql::rust_test(conn, log),
         (Engine::Oracle, Method::Native) => oracle::native_test(conn, log),
         (Engine::Oracle, Method::Rust) => oracle::rust_test(conn, log),
+        (Engine::Sqlite, Method::Native) => sqlite::native_test(conn, log),
+        (Engine::Sqlite, Method::Rust) => sqlite::rust_test(conn, log),
     }
 }
 
@@ -156,6 +170,13 @@ fn dispatch_test(conn: &Connection, m: Method, log: &mut Vec<String>) -> Result<
 fn prepare(conn: &Connection) -> Result<(Connection, Option<tunnel::TunnelGuard>)> {
     if conn.ssh.is_none() {
         return Ok((conn.clone(), None));
+    }
+    // Un motore su file è locale: inoltrare una porta TCP non lo raggiungerebbe.
+    if conn.engine.is_file_based() {
+        return Err(Error::Unsupported(format!(
+            "{} è un file locale: il tunnel SSH non si applica",
+            conn.engine.label()
+        )));
     }
     #[cfg(feature = "ssh-tunnel")]
     {

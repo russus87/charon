@@ -12,13 +12,18 @@ import {
   deleteConnection,
 } from "./api.js";
 
-// Porte di default per motore.
-export const PORTS = { postgres: 5432, oracle: 1521, sqlserver: 1433 };
+// Porte di default per motore. SQLite è un file: nessuna porta (0).
+export const PORTS = { postgres: 5432, oracle: 1521, sqlserver: 1433, sqlite: 0 };
+
+// Motori che sono un file locale invece di un server: per questi il campo
+// `database` contiene il percorso del file e host/utente/password non servono.
+export const FILE_ENGINES = ["sqlite"];
+export const isFileEngine = (e) => FILE_ENGINES.includes(e);
 
 export function blankConn(engine = "postgres") {
   return {
     engine,
-    host: "localhost",
+    host: isFileEngine(engine) ? "" : "localhost",
     port: PORTS[engine],
     database: "",
     user: "",
@@ -67,13 +72,27 @@ export const app = $state({
 
 // ------------------------------------------------------------- connessioni ---
 
-const ENGINE_LABELS = { postgres: "PostgreSQL", oracle: "Oracle", sqlserver: "SQL Server" };
+const ENGINE_LABELS = {
+  postgres: "PostgreSQL",
+  oracle: "Oracle",
+  sqlserver: "SQL Server",
+  sqlite: "SQLite",
+};
 export const engineLabel = (e) => ENGINE_LABELS[e] ?? e;
 
 // Genera un id stabile per un nuovo profilo (fallback se randomUUID non c'è).
 function newId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
   return `c_${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}`;
+}
+
+// Riepilogo leggibile di una connessione. Per i motori su file è il percorso:
+// mostrare "utente@host:0/percorso" sarebbe fuorviante.
+export function connTarget(c) {
+  if (!c) return "";
+  if (isFileEngine(c.engine)) return c.database || "(nessun file scelto)";
+  const base = `${c.user ? c.user + "@" : ""}${c.host}:${c.port}/${c.database}`;
+  return c.ssh ? `${base} (via SSH ${c.ssh.host})` : base;
 }
 
 // Ritorna l'oggetto Connection di un profilo dato il suo id (o null).
@@ -220,10 +239,20 @@ function buildCloneOptions() {
   return { data_only: app.cloneOpts.dataOnly, mask };
 }
 
-// Cambia motore e adegua la porta di default.
+// Cambia motore e adegua la porta di default. Passando a un motore su file
+// azzeriamo i campi di rete: resterebbero valori senza senso in `connections.json`
+// (e il tunnel SSH non si applica a un file locale).
 export function setEngine(conn, engine) {
   conn.engine = engine;
   conn.port = PORTS[engine];
+  if (isFileEngine(engine)) {
+    conn.host = "";
+    conn.user = "";
+    conn.password = "";
+    conn.ssh = null;
+  } else if (!conn.host) {
+    conn.host = "localhost";
+  }
 }
 
 // Carica (una volta) il riepilogo dei tool installati.

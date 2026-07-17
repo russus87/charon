@@ -1,5 +1,6 @@
 <script>
   import { setEngine, toggleSsh } from "../lib/state.svelte.js";
+  import { pickSqliteFile } from "../lib/api.js";
 
   // `conn` e' l'oggetto reattivo dello stato: mutarne i campi aggiorna tutto.
   let { conn, title = "Connessione" } = $props();
@@ -8,10 +9,19 @@
     { id: "postgres", label: "PostgreSQL" },
     { id: "oracle", label: "Oracle" },
     { id: "sqlserver", label: "SQL Server" },
+    { id: "sqlite", label: "SQLite" },
   ];
 
+  // SQLite è un file, non un server: niente host/porta/utente/password/SSH.
+  // Per quel motore `database` contiene il percorso del file .db.
+  let isFile = $derived(conn.engine === "sqlite");
   // Per Oracle il campo "database" e' il service name.
   let dbLabel = $derived(conn.engine === "oracle" ? "Service name" : "Database");
+
+  async function browse() {
+    const p = await pickSqliteFile();
+    if (p) conn.database = p;
+  }
 </script>
 
 <div class="form card">
@@ -30,34 +40,48 @@
     </div>
   </div>
 
-  <div class="grid">
-    <label class="wide">
-      <span>Host</span>
-      <input bind:value={conn.host} placeholder="localhost" autocomplete="off" />
-    </label>
-    <label>
-      <span>Porta</span>
-      <input type="number" bind:value={conn.port} />
-    </label>
-    <label>
-      <span>{dbLabel}</span>
-      <input bind:value={conn.database} placeholder={conn.engine === "oracle" ? "XEPDB1" : "miodb"} />
-    </label>
-    <label>
-      <span>Utente</span>
-      <input bind:value={conn.user} autocomplete="off" />
-    </label>
-    <label>
-      <span>Password</span>
-      <input type="password" bind:value={conn.password} autocomplete="off" />
-    </label>
-  </div>
+  {#if isFile}
+    <!-- SQLite: un solo campo, il percorso del file .db -->
+    <div class="file-row">
+      <label class="file-field">
+        <span>File del database</span>
+        <input bind:value={conn.database} placeholder="/percorso/al/mio.db" autocomplete="off" />
+      </label>
+      <button class="btn ghost" onclick={browse}>Sfoglia…</button>
+    </div>
+    <p class="file-hint">
+      SQLite è un file, non un server: non servono host, utente o password.
+    </p>
+  {:else}
+    <div class="grid">
+      <label class="wide">
+        <span>Host</span>
+        <input bind:value={conn.host} placeholder="localhost" autocomplete="off" />
+      </label>
+      <label>
+        <span>Porta</span>
+        <input type="number" bind:value={conn.port} />
+      </label>
+      <label>
+        <span>{dbLabel}</span>
+        <input bind:value={conn.database} placeholder={conn.engine === "oracle" ? "XEPDB1" : "miodb"} />
+      </label>
+      <label>
+        <span>Utente</span>
+        <input bind:value={conn.user} autocomplete="off" />
+      </label>
+      <label>
+        <span>Password</span>
+        <input type="password" bind:value={conn.password} autocomplete="off" />
+      </label>
+    </div>
 
-  <!-- Tunnel SSH opzionale (bastion) -->
-  <label class="ssh-toggle">
-    <input type="checkbox" checked={!!conn.ssh} onchange={() => toggleSsh(conn)} />
-    <span>Tunnel SSH (host/porta risolti dal lato del server SSH)</span>
-  </label>
+    <!-- Tunnel SSH opzionale (bastion). Su un file locale non si applica. -->
+    <label class="ssh-toggle">
+      <input type="checkbox" checked={!!conn.ssh} onchange={() => toggleSsh(conn)} />
+      <span>Tunnel SSH (host/porta risolti dal lato del server SSH)</span>
+    </label>
+  {/if}
 
   {#if conn.ssh}
     <div class="grid ssh">
@@ -145,6 +169,21 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 12px;
+  }
+  /* SQLite: percorso file + Sfoglia, allineati sulla stessa riga. */
+  .file-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+  }
+  .file-field {
+    flex: 1;
+    min-width: 0;
+  }
+  .file-hint {
+    margin: 8px 0 0;
+    font-size: 12.5px;
+    color: var(--text-dim, var(--ink-soft));
   }
   label {
     display: flex;

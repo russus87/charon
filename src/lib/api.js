@@ -42,3 +42,10 @@ export const pickSavePath = (defaultName) =>
 
 export const pickOpenPath = () =>
   open({ multiple: false, filters: [{ name: "Dump", extensions: ["sql", "dmp"] }] });
+
+// Sceglie il file di un database SQLite (per SQLite la "connessione" è un file).
+export const pickSqliteFile = () =>
+  open({
+    multiple: false,
+    filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3", "db3"] }],
+  });

@@ -1,5 +1,5 @@
 <script>
-  import { app, engineLabel, connById, runTest } from "../lib/state.svelte.js";
+  import { app, engineLabel, connById, runTest, connTarget } from "../lib/state.svelte.js";
 
   let { selectedId = $bindable(), title = "Connessione" } = $props();
 
@@ -28,7 +28,7 @@
     {#if conn}
       <div class="summary">
         <span class="badge brand">{engineLabel(conn.engine)}</span>
-        <code>{conn.user ? conn.user + "@" : ""}{conn.host}:{conn.port}/{conn.database}</code>
+        <code>{connTarget(conn)}</code>
         {#if conn.ssh}<span class="badge grey">SSH</span>{/if}
       </div>
     {/if}

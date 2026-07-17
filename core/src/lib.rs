@@ -24,6 +24,7 @@ pub mod ops;
 pub mod oracle;
 pub mod postgres;
 pub mod progress;
+pub mod sqlite;
 pub mod tools;
 pub mod tunnel;
 

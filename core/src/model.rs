@@ -9,15 +9,25 @@ pub enum Engine {
     Postgres,
     Oracle,
     Sqlserver,
+    /// SQLite: non è un server ma un **file**. Per questo motore il campo
+    /// `Connection::database` contiene il **percorso del file .db**, e
+    /// host/porta/utente/password non si applicano.
+    Sqlite,
 }
 
 impl Engine {
-    /// Porta TCP di default del motore.
+    /// Il motore è un file locale (nessun server, nessuna autenticazione)?
+    pub fn is_file_based(self) -> bool {
+        matches!(self, Engine::Sqlite)
+    }
+
+    /// Porta TCP di default del motore. Per i motori su file non ha senso: 0.
     pub fn default_port(self) -> u16 {
         match self {
             Engine::Postgres => 5432,
             Engine::Sqlserver => 1433,
             Engine::Oracle => 1521,
+            Engine::Sqlite => 0,
         }
     }
 
@@ -27,6 +37,7 @@ impl Engine {
             Engine::Postgres => "PostgreSQL",
             Engine::Oracle => "Oracle",
             Engine::Sqlserver => "SQL Server",
+            Engine::Sqlite => "SQLite",
         }
     }
 }

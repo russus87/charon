@@ -53,6 +53,9 @@ export const app = $state({
   busy: false, // operazione in corso
   liveLog: [], // righe di avanzamento in tempo reale (evento charon://progress)
   result: null, // ultimo OpResult
+  showLog: false, // console (log dettagliato) espansa: l'utente la apre se serve
+  resultModal: false, // popup di riepilogo a fine operazione
+  lastOp: null, // 'dump' | 'import' | 'clone': quale operazione ha prodotto result
   // Opzioni del clone. dataOnly: preserva lo schema destinazione (TRUNCATE+dati).
   // mask: regole {table, column, kind, value} (value solo per kind='fixed').
   cloneOpts: { dataOnly: false, mask: [] },
@@ -212,22 +215,50 @@ export async function initProgress() {
   });
 }
 
-async function withBusy(fn) {
+// Titoli del popup di riepilogo, per operazione ed esito.
+export const OP_TITLES = {
+  dump: { ok: "Dump completato", err: "Dump non riuscito" },
+  import: { ok: "Import completato", err: "Import non riuscito" },
+  clone: { ok: "Clonazione completata", err: "Clonazione non riuscita" },
+};
+
+export function closeResultModal() {
+  app.resultModal = false;
+}
+
+// Chiude il popup e apre la console: "Mostra log" dal riepilogo.
+export function openLogFromModal() {
+  app.resultModal = false;
+  app.showLog = true;
+}
+
+export function toggleLog() {
+  app.showLog = !app.showLog;
+}
+
+// `op` (dump|import|clone) attiva il popup di riepilogo a fine operazione; le
+// operazioni senza op (es. prova connessione) restano solo inline nella console.
+async function withBusy(fn, op = null) {
   app.busy = true;
   app.result = null;
   app.liveLog = []; // azzera il log live a ogni nuova operazione
+  app.lastOp = op;
   try {
     app.result = await fn();
   } catch (e) {
     app.result = { ok: false, method: "native", message: String(e), artifact: null, log: [] };
   } finally {
     app.busy = false;
+    if (op) app.resultModal = true;
   }
 }
 
 // Risultato d'errore "connessione non selezionata", senza chiamare il backend.
-function needConn(msg) {
+// Passa anche dal popup: altrimenti l'utente non si accorge dell'errore.
+function needConn(msg, op) {
+  app.lastOp = op;
   app.result = { ok: false, method: "native", message: msg, artifact: null, log: [] };
+  app.resultModal = true;
 }
 
 // Testa una connessione (oggetto Connection già risolto, es. dall'editor/picker).
@@ -235,27 +266,35 @@ export const runTest = (conn) => withBusy(() => testConnection($state.snapshot(c
 
 export const runDump = () => {
   const c = connById(app.sel.dump);
-  if (!c) return needConn("Seleziona una connessione salvata.");
-  return withBusy(() => dumpDatabase($state.snapshot(c), app.dumpPath, app.prefer, app.dryRun));
+  if (!c) return needConn("Seleziona una connessione salvata.", "dump");
+  return withBusy(
+    () => dumpDatabase($state.snapshot(c), app.dumpPath, app.prefer, app.dryRun),
+    "dump",
+  );
 };
 
 export const runImport = () => {
   const c = connById(app.sel.import);
-  if (!c) return needConn("Seleziona una connessione salvata.");
-  return withBusy(() => importDump($state.snapshot(c), app.importPath, app.prefer, app.dryRun));
+  if (!c) return needConn("Seleziona una connessione salvata.", "import");
+  return withBusy(
+    () => importDump($state.snapshot(c), app.importPath, app.prefer, app.dryRun),
+    "import",
+  );
 };
 
 export const runClone = () => {
   const src = connById(app.sel.cloneSrc);
   const dst = connById(app.sel.cloneDst);
-  if (!src || !dst) return needConn("Seleziona sorgente e destinazione.");
-  return withBusy(() =>
-    cloneDatabase(
-      $state.snapshot(src),
-      $state.snapshot(dst),
-      app.prefer,
-      buildCloneOptions(),
-      app.dryRun,
-    ),
+  if (!src || !dst) return needConn("Seleziona sorgente e destinazione.", "clone");
+  return withBusy(
+    () =>
+      cloneDatabase(
+        $state.snapshot(src),
+        $state.snapshot(dst),
+        app.prefer,
+        buildCloneOptions(),
+        app.dryRun,
+      ),
+    "clone",
   );
 };

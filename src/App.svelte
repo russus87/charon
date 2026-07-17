@@ -7,6 +7,7 @@
   import Import from "./components/Import.svelte";
   import Clone from "./components/Clone.svelte";
   import Tools from "./components/Tools.svelte";
+  import ResultModal from "./components/ResultModal.svelte";
 
   onMount(() => {
     loadReports();
@@ -46,6 +47,9 @@
       </div>
     {/key}
   </main>
+
+  <!-- Riepilogo a fine operazione: sopra tutto, chiuso con OK/Esc/backdrop. -->
+  <ResultModal />
 </div>
 
 <style>

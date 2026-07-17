@@ -8,8 +8,10 @@ version = "0.2.1"
 edition = "2021"
 
 [features]
-# Fallback puro Rust (Postgres/SQL Server) e tunnel SSH: attivi di default.
-default = ["pg-driver", "mssql-driver", "ssh-tunnel"]
+# Fallback puro Rust (Postgres/SQL Server/Oracle) e tunnel SSH: attivi di default.
+# Oracle incluso: compilarlo non richiede l'Instant Client (serve solo a runtime),
+# quindi anche la build di sviluppo mostra Oracle fra i motori disponibili.
+default = ["pg-driver", "mssql-driver", "ssh-tunnel", "oracle-driver"]
 pg-driver = ["dep:tokio-postgres"]
 mssql-driver = ["dep:tiberius", "dep:tokio-util", "dep:futures-util"]
 # Tunnel SSH puro Rust (nessun binario ssh esterno richiesto).

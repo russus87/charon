@@ -1,19 +1,25 @@
 <script>
-  import { app } from "../lib/state.svelte.js";
+  import { app, toggleLog } from "../lib/state.svelte.js";
 
-  // Pannello "console": mostra esito + metodo usato + log dell'ultima operazione.
+  // Pannello "console": esito + metodo usato dell'ultima operazione. Il log
+  // dettagliato è collassato di default: l'utente lo apre solo se gli serve.
   let r = $derived(app.result);
   let methodLabel = $derived(
     r?.method === "rust" ? "puro Rust (best-effort)" : "tool nativi",
   );
+  // Numero di righe di log disponibili, per invogliare l'apertura quando servono.
+  let lines = $derived(app.busy ? app.liveLog.length : (r?.log?.length ?? 0));
 </script>
 
-<div class="panel card">
+<div class="panel card" class:collapsed={!app.showLog}>
   <div class="head">
     <h3>Console</h3>
     {#if r}
       <span class="badge {r.ok ? 'ok' : 'err'}">{r.ok ? "OK" : "Errore"}</span>
     {/if}
+    <button class="btn ghost sm toggle" onclick={toggleLog} aria-expanded={app.showLog}>
+      {app.showLog ? "Nascondi log ▾" : `Mostra log${lines ? ` (${lines})` : ""} ▸`}
+    </button>
   </div>
 
   {#if r}
@@ -26,23 +32,30 @@
     <p class="msg" class:err={!r.ok}>{r.message}</p>
   {/if}
 
-  <div class="log">
-    {#if app.busy}
-      <div class="spinner">Operazione in corso…</div>
-      {#each app.liveLog as line}
-        <div class="line" class:cmd={line.startsWith("$")}>{line}</div>
-      {/each}
-    {:else if r && r.log && r.log.length}
-      {#each r.log as line}
-        <div class="line" class:cmd={line.startsWith("$")}>{line}</div>
-      {/each}
-    {:else}
-      <div class="empty">
-        Qui compariranno il metodo usato (nativo o puro Rust), i comandi eseguiti
-        e l'output del database.
-      </div>
-    {/if}
-  </div>
+  <!-- Con la console chiusa serve comunque un segnale che qualcosa sta girando. -->
+  {#if app.busy && !app.showLog}
+    <div class="mini spinner">Operazione in corso…</div>
+  {/if}
+
+  {#if app.showLog}
+    <div class="log">
+      {#if app.busy}
+        <div class="spinner">Operazione in corso…</div>
+        {#each app.liveLog as line}
+          <div class="line" class:cmd={line.startsWith("$")}>{line}</div>
+        {/each}
+      {:else if r && r.log && r.log.length}
+        {#each r.log as line}
+          <div class="line" class:cmd={line.startsWith("$")}>{line}</div>
+        {/each}
+      {:else}
+        <div class="empty">
+          Qui compariranno il metodo usato (nativo o puro Rust), i comandi eseguiti
+          e l'output del database.
+        </div>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -53,15 +66,28 @@
     min-height: 0;
     height: 100%;
   }
+  /* Con il log chiuso il pannello non deve occupare tutta la colonna. */
+  .panel.collapsed {
+    height: auto;
+    align-self: flex-start;
+  }
   .head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 10px;
     margin-bottom: 12px;
   }
   h3 {
     margin: 0;
     font-size: 16px;
+  }
+  .toggle {
+    margin-left: auto;
+    flex: none;
+  }
+  .mini {
+    font-size: 13px;
+    color: var(--text-dim, var(--ink-soft));
   }
   .meta {
     display: flex;

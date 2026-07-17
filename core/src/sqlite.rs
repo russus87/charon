@@ -11,6 +11,7 @@
 //!   il DDL originale in `sqlite_master`, quindi lo riusiamo così com'è invece
 //!   di ricostruire i tipi. I BLOB diventano letterali `X'..'`.
 
+use crate::compare::{ColumnDiff, DbDiff, Status, TableDiff};
 use crate::model::*;
 use crate::tools::{find_tool, has_tool};
 use crate::{Error, Result};
@@ -300,6 +301,20 @@ pub fn rust_test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {
     }
 }
 
+/// Confronta due database SQLite (schema + conteggio righe). Sincrona: SQLite
+/// non ha rete, quindi niente runtime async serve qui.
+pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
+    #[cfg(feature = "sqlite-driver")]
+    {
+        return rustimpl::compare(src, dst);
+    }
+    #[cfg(not(feature = "sqlite-driver"))]
+    {
+        let _ = (src, dst);
+        Err(no_driver())
+    }
+}
+
 #[cfg(feature = "sqlite-driver")]
 mod rustimpl {
     use super::*;
@@ -353,6 +368,166 @@ mod rustimpl {
             out.push(r.map_err(|e| Error::Msg(e.to_string()))?);
         }
         Ok(out)
+    }
+
+    // ------------------------------------------------------------- compare ---
+
+    /// Nomi delle tabelle utente (esclude le tabelle di sistema `sqlite_%`).
+    fn list_tables(c: &Sql) -> Result<Vec<String>> {
+        let mut st = c
+            .prepare(
+                "SELECT name FROM sqlite_master \
+                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let rows = st
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| Error::Msg(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Colonne di una tabella (nome, definizione leggibile) via `PRAGMA table_info`:
+    /// il tipo dichiarato (può essere vuoto in SQLite) più `NOT NULL` se presente.
+    fn columns(c: &Sql, table: &str) -> Result<Vec<(String, String)>> {
+        let mut st = c
+            .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let rows = st
+            .query_map([], |r| {
+                let name: String = r.get(1)?;
+                let ctype: String = r.get(2)?;
+                let notnull: i64 = r.get(3)?;
+                Ok((name, ctype, notnull))
+            })
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (name, ctype, notnull) = r.map_err(|e| Error::Msg(e.to_string()))?;
+            let def = format!("{ctype}{}", if notnull == 1 { " NOT NULL" } else { "" });
+            out.push((name, def));
+        }
+        Ok(out)
+    }
+
+    /// Conta le righe di una tabella. Best-effort: `None` se non contabile.
+    fn count_rows(c: &Sql, table: &str) -> Option<i64> {
+        c.query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |r| r.get(0))
+            .ok()
+    }
+
+    /// Confronta schema e volume dati di due database SQLite.
+    pub fn compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
+        let s = open_ro(db_path(src))?;
+        let d = open_ro(db_path(dst))?;
+        let mut log = Vec::new();
+
+        let stables = list_tables(&s)?;
+        let dtables = list_tables(&d)?;
+        crate::progress::note(
+            &mut log,
+            format!(
+                "Tabelle: {} nella sorgente, {} nella destinazione",
+                stables.len(),
+                dtables.len()
+            ),
+        );
+
+        // Unione ordinata dei nomi visti da almeno una parte.
+        let mut names: Vec<String> = stables.iter().chain(dtables.iter()).cloned().collect();
+        names.sort();
+        names.dedup();
+
+        let mut tables = Vec::new();
+        for name in names {
+            let in_s = stables.contains(&name);
+            let in_d = dtables.contains(&name);
+
+            // Tabella presente da un solo lato: tutte le colonne sono "nuove".
+            if in_s != in_d {
+                let (c, status) = if in_s {
+                    (&s, Status::OnlySource)
+                } else {
+                    (&d, Status::OnlyTarget)
+                };
+                let cols = columns(c, &name)?;
+                let columns_diff = cols
+                    .iter()
+                    .map(|(cname, def)| ColumnDiff {
+                        name: cname.clone(),
+                        status,
+                        source: if in_s { Some(def.clone()) } else { None },
+                        target: if in_s { None } else { Some(def.clone()) },
+                    })
+                    .collect();
+                tables.push(TableDiff {
+                    name: name.clone(),
+                    status,
+                    columns: columns_diff,
+                    source_rows: if in_s { count_rows(&s, &name) } else { None },
+                    target_rows: if in_s { None } else { count_rows(&d, &name) },
+                });
+                continue;
+            }
+
+            // Presente da entrambe le parti: confronto colonna per colonna.
+            let scols = columns(&s, &name)?;
+            let dcols = columns(&d, &name)?;
+            let mut cnames: Vec<String> = scols
+                .iter()
+                .chain(dcols.iter())
+                .map(|(n, _)| n.clone())
+                .collect();
+            cnames.sort();
+            cnames.dedup();
+
+            let mut columns_diff = Vec::new();
+            for cn in cnames {
+                let sc = scols.iter().find(|(n, _)| *n == cn).map(|(_, def)| def.clone());
+                let dc = dcols.iter().find(|(n, _)| *n == cn).map(|(_, def)| def.clone());
+                let status = match (&sc, &dc) {
+                    (Some(a), Some(b)) if a == b => Status::Same,
+                    (Some(_), Some(_)) => Status::Changed,
+                    (Some(_), None) => Status::OnlySource,
+                    (None, Some(_)) => Status::OnlyTarget,
+                    (None, None) => continue, // impossibile: il nome viene da un lato
+                };
+                // Le colonne identiche non entrano nel diff: su tabelle larghe
+                // renderebbero illeggibile ciò che conta davvero.
+                if status != Status::Same {
+                    columns_diff.push(ColumnDiff {
+                        name: cn,
+                        status,
+                        source: sc,
+                        target: dc,
+                    });
+                }
+            }
+
+            let status = if columns_diff.is_empty() {
+                Status::Same
+            } else {
+                Status::Changed
+            };
+            tables.push(TableDiff {
+                name: name.clone(),
+                status,
+                columns: columns_diff,
+                source_rows: count_rows(&s, &name),
+                target_rows: count_rows(&d, &name),
+            });
+        }
+
+        let diff = DbDiff {
+            tables,
+            source_label: db_path(src).to_string(),
+            target_label: db_path(dst).to_string(),
+            log,
+        };
+        Ok(diff)
     }
 
     /// Genera il dump completo: schema (DDL originale) + dati + indici/trigger/viste.

@@ -326,3 +326,67 @@ fn test_connessione_distingue_un_db_valido() {
     let r = ops::test_connection(&conn(&fasullo), Prefer::Rust);
     assert!(!r.ok, "un file non-SQLite è stato accettato: {}", r.message);
 }
+
+/// Due database con lo stesso schema (clonati dalla stessa sorgente) devono
+/// risultare identici per il confronto; introducendo una divergenza di schema
+/// e una di dati, il diff deve segnalarle correttamente.
+#[test]
+fn compare_rileva_tabelle_e_colonne_divergenti() {
+    use charon_core::compare::Status;
+
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let src = seeded(d, "src", Prefer::Rust);
+    let dst = conn(&d.join("dst.db"));
+    ok(
+        ops::clone(&src, &dst, Prefer::Rust, &CloneOptions::default(), false),
+        "clone per compare",
+    );
+
+    // Appena clonati: nessuna differenza.
+    let diff = charon_core::sqlite::rust_compare(&src, &dst).expect("compare (identici)");
+    assert!(diff.identical(), "db appena clonati risultano diversi: {diff:?}");
+
+    // Una tabella solo sulla destinazione, una colonna in più su 'autori', una
+    // riga in più su 'libri': il diff deve vederle tutte.
+    let extra_sql = d.join("extra.sql");
+    write(
+        &extra_sql,
+        "CREATE TABLE solo_dst (id INTEGER PRIMARY KEY);\n\
+         ALTER TABLE autori ADD COLUMN paese TEXT;\n\
+         INSERT INTO libri (titolo, autore_id) VALUES ('Extra', 1);\n",
+    );
+    ok(
+        ops::import(&dst, &extra_sql.display().to_string(), Prefer::Rust, false),
+        "import divergenze",
+    );
+
+    let diff2 = charon_core::sqlite::rust_compare(&src, &dst).expect("compare (divergenti)");
+    assert!(!diff2.identical(), "il diff non ha visto le divergenze");
+
+    let solo_dst = diff2
+        .tables
+        .iter()
+        .find(|t| t.name == "solo_dst")
+        .expect("tabella solo_dst assente dal diff");
+    assert_eq!(solo_dst.status, Status::OnlyTarget);
+
+    let autori = diff2
+        .tables
+        .iter()
+        .find(|t| t.name == "autori")
+        .expect("tabella autori assente dal diff");
+    assert_eq!(autori.status, Status::Changed);
+    assert!(
+        autori.columns.iter().any(|c| c.name == "paese" && c.status == Status::OnlyTarget),
+        "colonna 'paese' non rilevata come OnlyTarget: {:?}",
+        autori.columns
+    );
+
+    let libri = diff2
+        .tables
+        .iter()
+        .find(|t| t.name == "libri")
+        .expect("tabella libri assente dal diff");
+    assert!(libri.rows_differ(), "conteggio righe di 'libri' non divergente");
+}

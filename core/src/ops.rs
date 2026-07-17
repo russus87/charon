@@ -386,8 +386,8 @@ pub fn oracle_setup(path: &str) -> OpResult {
 /// Confronta due database dello stesso motore e restituisce il diff (schema +
 /// conteggio righe). **Sola lettura**: non modifica nessuno dei due lati.
 ///
-/// Al momento è implementato solo per Oracle; gli altri motori restituiscono un
-/// errore esplicito invece di un diff vuoto che sembrerebbe "tutto uguale".
+/// Implementato per tutti i motori (PostgreSQL, Oracle, SQL Server, SQLite) via
+/// il fallback puro Rust: legge i cataloghi, i tool nativi non c'entrano.
 pub fn compare(src: &Connection, dst: &Connection) -> Result<crate::compare::DbDiff> {
     if src.engine != dst.engine {
         return Err(Error::Unsupported(
@@ -397,10 +397,10 @@ pub fn compare(src: &Connection, dst: &Connection) -> Result<crate::compare::DbD
     let (src, _gs) = prepare(src)?;
     let (dst, _gd) = prepare(dst)?;
     match src.engine {
+        Engine::Postgres => postgres::rust_compare(&src, &dst),
         Engine::Oracle => oracle::rust_compare(&src, &dst),
-        _ => Err(Error::Unsupported(
-            "il confronto è al momento disponibile solo per Oracle".into(),
-        )),
+        Engine::Sqlserver => mssql::rust_compare(&src, &dst),
+        Engine::Sqlite => sqlite::rust_compare(&src, &dst),
     }
 }
 

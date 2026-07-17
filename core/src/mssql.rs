@@ -5,6 +5,7 @@
 //! - **Puro Rust** (`mssql-driver`): driver TDS `tiberius`, dump best-effort via
 //!   `FOR JSON` e import eseguendo i batch separati da `GO`.
 
+use crate::compare::{ColumnDiff, DbDiff, Status, TableDiff};
 use crate::model::*;
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
@@ -254,6 +255,20 @@ pub fn rust_test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {
     }
 }
 
+/// Confronta due database SQL Server (schema + conteggio righe). Solo puro
+/// Rust: il confronto legge i cataloghi via tiberius, i tool nativi non c'entrano.
+pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
+    #[cfg(feature = "mssql-driver")]
+    {
+        return rustimpl::runtime()?.block_on(rustimpl::compare(src, dst));
+    }
+    #[cfg(not(feature = "mssql-driver"))]
+    {
+        let _ = (src, dst);
+        Err(Error::Unsupported("fallback SQL Server non disponibile in questa build".into()))
+    }
+}
+
 #[cfg(feature = "mssql-driver")]
 mod rustimpl {
     use super::*;
@@ -274,7 +289,7 @@ mod rustimpl {
         ref_cols: Vec<String>,
     }
 
-    fn runtime() -> Result<tokio::runtime::Runtime> {
+    pub(super) fn runtime() -> Result<tokio::runtime::Runtime> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -344,6 +359,171 @@ mod rustimpl {
             },
             other => other.to_string(),
         }
+    }
+
+    // ------------------------------------------------------------- compare ---
+
+    /// Elenca (schema, tabella) di tutte le BASE TABLE.
+    async fn list_tables(client: &mut Conn) -> Result<Vec<(String, String)>> {
+        let rows = query(
+            client,
+            "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES \
+             WHERE TABLE_TYPE='BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME",
+        )
+        .await?;
+        Ok(rows.iter().map(|r| (s(r, 0), s(r, 1))).collect())
+    }
+
+    /// Colonne di `schema.table` con la loro definizione leggibile (tipo +
+    /// eventuale `NOT NULL`), usata per confrontare gli schemi.
+    async fn columns_def(client: &mut Conn, schema: &str, table: &str) -> Result<Vec<(String, String)>> {
+        let full = format!("[{schema}].[{table}]");
+        let rows = query(
+            client,
+            &format!(
+                "SELECT c.name, tp.name, CAST(c.max_length AS INT), CAST(c.precision AS INT), \
+                 CAST(c.scale AS INT), CAST(c.is_nullable AS INT) \
+                 FROM sys.columns c \
+                 JOIN sys.types tp ON tp.user_type_id = c.user_type_id \
+                 WHERE c.object_id = OBJECT_ID('{full}') ORDER BY c.column_id"
+            ),
+        )
+        .await?;
+        let mut out = Vec::new();
+        for r in &rows {
+            let name = s(r, 0);
+            let dtype = s(r, 1);
+            let max_len = i(r, 2);
+            let prec = i(r, 3);
+            let scale = i(r, 4);
+            let nullable = i(r, 5).unwrap_or(1) == 1;
+            let mut def = map_type(&dtype, max_len, prec, scale);
+            if !nullable {
+                def.push_str(" NOT NULL");
+            }
+            out.push((name, def));
+        }
+        Ok(out)
+    }
+
+    /// Conta le righe di `schema.table`. Best-effort: se non è contabile
+    /// (permessi, tabella in stato strano) restituisce `None` invece di far
+    /// fallire il diff.
+    async fn count_rows(client: &mut Conn, schema: &str, table: &str) -> Option<i64> {
+        let full = format!("[{schema}].[{table}]");
+        let rows = query(client, &format!("SELECT COUNT(*) FROM {full}")).await.ok()?;
+        rows.first().and_then(|r| i(r, 0)).map(|n| n as i64)
+    }
+
+    /// Confronta schema e volume dati di due database SQL Server.
+    pub async fn compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
+        let mut sc = connect(src).await?;
+        let mut dc = connect(dst).await?;
+        let mut log = Vec::new();
+
+        let stables = list_tables(&mut sc).await?;
+        let dtables = list_tables(&mut dc).await?;
+        log.push(format!(
+            "Tabelle: {} nella sorgente, {} nella destinazione",
+            stables.len(),
+            dtables.len()
+        ));
+
+        // Nome nel diff = "schema.tabella", così due schemi diversi non si confondono.
+        let sfull: Vec<String> = stables.iter().map(|(sch, t)| format!("{sch}.{t}")).collect();
+        let dfull: Vec<String> = dtables.iter().map(|(sch, t)| format!("{sch}.{t}")).collect();
+
+        // Unione ordinata+dedup dei nomi visti da almeno una parte.
+        let mut names: Vec<String> = sfull.iter().chain(dfull.iter()).cloned().collect();
+        names.sort();
+        names.dedup();
+
+        let mut tables = Vec::new();
+        for name in names {
+            let in_s = sfull.contains(&name);
+            let in_d = dfull.contains(&name);
+            let (schema, table) = name.split_once('.').unwrap_or(("dbo", name.as_str()));
+            let (schema, table) = (schema.to_string(), table.to_string());
+
+            // Tabella presente da un solo lato: tutte le colonne sono "nuove".
+            if in_s != in_d {
+                let status = if in_s { Status::OnlySource } else { Status::OnlyTarget };
+                let cols = if in_s {
+                    columns_def(&mut sc, &schema, &table).await?
+                } else {
+                    columns_def(&mut dc, &schema, &table).await?
+                };
+                let rows = if in_s {
+                    count_rows(&mut sc, &schema, &table).await
+                } else {
+                    count_rows(&mut dc, &schema, &table).await
+                };
+                let columns_diff = cols
+                    .into_iter()
+                    .map(|(cname, def)| ColumnDiff {
+                        name: cname,
+                        status,
+                        source: if in_s { Some(def.clone()) } else { None },
+                        target: if in_s { None } else { Some(def) },
+                    })
+                    .collect();
+                tables.push(TableDiff {
+                    name: name.clone(),
+                    status,
+                    columns: columns_diff,
+                    source_rows: if in_s { rows } else { None },
+                    target_rows: if in_s { None } else { rows },
+                });
+                continue;
+            }
+
+            // Presente da entrambe le parti: confronto colonna per colonna.
+            let scols = columns_def(&mut sc, &schema, &table).await?;
+            let dcols = columns_def(&mut dc, &schema, &table).await?;
+            let mut cnames: Vec<String> = scols
+                .iter()
+                .chain(dcols.iter())
+                .map(|(n, _)| n.clone())
+                .collect();
+            cnames.sort();
+            cnames.dedup();
+
+            let mut columns_diff = Vec::new();
+            for cn in cnames {
+                let sdef = scols.iter().find(|(n, _)| *n == cn).map(|(_, d)| d.clone());
+                let ddef = dcols.iter().find(|(n, _)| *n == cn).map(|(_, d)| d.clone());
+                let status = match (&sdef, &ddef) {
+                    (Some(a), Some(b)) if a == b => Status::Same,
+                    (Some(_), Some(_)) => Status::Changed,
+                    (Some(_), None) => Status::OnlySource,
+                    (None, Some(_)) => Status::OnlyTarget,
+                    (None, None) => continue, // impossibile: il nome viene da un lato
+                };
+                // Le colonne identiche non entrano nel diff: su tabelle larghe
+                // renderebbero illeggibile ciò che conta davvero.
+                if status != Status::Same {
+                    columns_diff.push(ColumnDiff { name: cn, status, source: sdef, target: ddef });
+                }
+            }
+
+            let status = if columns_diff.is_empty() { Status::Same } else { Status::Changed };
+            let source_rows = count_rows(&mut sc, &schema, &table).await;
+            let target_rows = count_rows(&mut dc, &schema, &table).await;
+            tables.push(TableDiff {
+                name,
+                status,
+                columns: columns_diff,
+                source_rows,
+                target_rows,
+            });
+        }
+
+        Ok(DbDiff {
+            tables,
+            source_label: format!("{}:{}/{}", src.host, src.port, src.database),
+            target_label: format!("{}:{}/{}", dst.host, dst.port, dst.database),
+            log,
+        })
     }
 
     fn lit(v: &Value) -> String {

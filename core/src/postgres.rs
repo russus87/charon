@@ -4,6 +4,7 @@
 //! - **Puro Rust** (`pg-driver`): si connette con `tokio-postgres` e genera un
 //!   dump SQL best-effort (schema essenziale + dati come INSERT), reimportabile.
 
+use crate::compare::{ColumnDiff, DbDiff, Status, TableDiff};
 use crate::model::*;
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
@@ -328,6 +329,25 @@ pub fn rust_test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {
     #[cfg(not(feature = "pg-driver"))]
     {
         let _ = (conn, log);
+        Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
+    }
+}
+
+/// Confronta due database PostgreSQL (schema + conteggio righe). `compare` è
+/// async (usa tokio-postgres): qui apriamo un runtime tokio dedicato e
+/// blocchiamo fino al risultato, come fanno le altre `rust_*` con `rustimpl`.
+pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
+    #[cfg(feature = "pg-driver")]
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| Error::Msg(format!("runtime tokio: {e}")))?;
+        return rt.block_on(rustimpl::compare(src, dst));
+    }
+    #[cfg(not(feature = "pg-driver"))]
+    {
+        let _ = (src, dst);
         Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
     }
 }
@@ -758,6 +778,174 @@ mod rustimpl {
             let v: String = row.get(0);
             log.push(v);
             Ok::<(), Error>(())
+        })
+    }
+
+    // ------------------------------------------------------------- compare ---
+
+    /// Elenca le tabelle base dello schema `public`.
+    async fn list_tables(client: &tokio_postgres::Client) -> Result<Vec<String>> {
+        let rows = client
+            .query(
+                "SELECT table_name FROM information_schema.tables \
+                 WHERE table_schema='public' AND table_type='BASE TABLE' \
+                 ORDER BY table_name",
+                &[],
+            )
+            .await
+            .map_err(perr)?;
+        Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
+    }
+
+    /// Definizione leggibile (nome, tipo [NOT NULL]) di ogni colonna di una tabella.
+    async fn column_defs(client: &tokio_postgres::Client, table: &str) -> Result<Vec<(String, String)>> {
+        let cols = client
+            .query(
+                "SELECT column_name, data_type, character_maximum_length, is_nullable \
+                 FROM information_schema.columns \
+                 WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position",
+                &[&table],
+            )
+            .await
+            .map_err(perr)?;
+        Ok(cols
+            .iter()
+            .map(|c| {
+                let name: String = c.get(0);
+                let dtype: String = c.get(1);
+                let maxlen: Option<i32> = c.get(2);
+                let nullable: String = c.get(3);
+                let mut def = map_type(&dtype, maxlen);
+                if nullable == "NO" {
+                    def.push_str(" NOT NULL");
+                }
+                (name, def)
+            })
+            .collect())
+    }
+
+    /// Conta le righe di una tabella. Best-effort: `None` se non contabile
+    /// (permessi, tabella in stato strano), invece di far fallire il diff.
+    async fn count_rows(client: &tokio_postgres::Client, table: &str) -> Option<i64> {
+        client
+            .query_one(&format!("SELECT count(*) FROM \"{table}\""), &[])
+            .await
+            .ok()
+            .map(|r| r.get::<_, i64>(0))
+    }
+
+    /// Etichetta leggibile di una connessione, per il diff (es. `localhost:5432/mydb`).
+    fn label(conn: &Connection) -> String {
+        format!("{}:{}/{}", conn.host, conn.port, conn.database)
+    }
+
+    /// Confronta schema e volume dati di due database PostgreSQL.
+    pub async fn compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
+        let s = connect(src).await?;
+        let d = connect(dst).await?;
+        let mut log = Vec::new();
+
+        let stables = list_tables(&s).await?;
+        let dtables = list_tables(&d).await?;
+        crate::progress::note(
+            &mut log,
+            format!(
+                "Tabelle: {} nella sorgente, {} nella destinazione",
+                stables.len(),
+                dtables.len()
+            ),
+        );
+
+        // Unione ordinata dei nomi visti da almeno una parte.
+        let mut names: Vec<String> = stables.iter().chain(dtables.iter()).cloned().collect();
+        names.sort();
+        names.dedup();
+
+        let mut tables = Vec::new();
+        for name in names {
+            let in_s = stables.contains(&name);
+            let in_d = dtables.contains(&name);
+
+            // Tabella presente da un solo lato: tutte le colonne sono "nuove".
+            if in_s != in_d {
+                let (c, status) = if in_s {
+                    (&s, Status::OnlySource)
+                } else {
+                    (&d, Status::OnlyTarget)
+                };
+                let cols = column_defs(c, &name).await?;
+                let columns_diff = cols
+                    .into_iter()
+                    .map(|(cname, def)| ColumnDiff {
+                        name: cname,
+                        status,
+                        source: if in_s { Some(def.clone()) } else { None },
+                        target: if in_s { None } else { Some(def) },
+                    })
+                    .collect();
+                tables.push(TableDiff {
+                    name: name.clone(),
+                    status,
+                    columns: columns_diff,
+                    source_rows: if in_s { count_rows(&s, &name).await } else { None },
+                    target_rows: if in_s { None } else { count_rows(&d, &name).await },
+                });
+                continue;
+            }
+
+            // Presente da entrambe le parti: confronto colonna per colonna.
+            let scols = column_defs(&s, &name).await?;
+            let dcols = column_defs(&d, &name).await?;
+            let mut cnames: Vec<String> = scols
+                .iter()
+                .chain(dcols.iter())
+                .map(|(n, _)| n.clone())
+                .collect();
+            cnames.sort();
+            cnames.dedup();
+
+            let mut columns_diff = Vec::new();
+            for cn in cnames {
+                let sc = scols.iter().find(|(n, _)| *n == cn).map(|(_, d)| d.clone());
+                let dc = dcols.iter().find(|(n, _)| *n == cn).map(|(_, d)| d.clone());
+                let status = match (&sc, &dc) {
+                    (Some(a), Some(b)) if a == b => Status::Same,
+                    (Some(_), Some(_)) => Status::Changed,
+                    (Some(_), None) => Status::OnlySource,
+                    (None, Some(_)) => Status::OnlyTarget,
+                    (None, None) => continue, // impossibile: il nome viene da un lato
+                };
+                // Le colonne identiche non entrano nel diff: su tabelle larghe
+                // renderebbero illeggibile ciò che conta davvero.
+                if status != Status::Same {
+                    columns_diff.push(ColumnDiff {
+                        name: cn,
+                        status,
+                        source: sc,
+                        target: dc,
+                    });
+                }
+            }
+
+            let status = if columns_diff.is_empty() {
+                Status::Same
+            } else {
+                Status::Changed
+            };
+            tables.push(TableDiff {
+                name: name.clone(),
+                status,
+                columns: columns_diff,
+                source_rows: count_rows(&s, &name).await,
+                target_rows: count_rows(&d, &name).await,
+            });
+        }
+
+        Ok(DbDiff {
+            tables,
+            source_label: label(src),
+            target_label: label(dst),
+            log,
         })
     }
 }

@@ -38,7 +38,7 @@
   <div class="card bar">
     <p class="note">
       Confronto <b>in sola lettura</b>: nessuno dei due database viene modificato.
-      Al momento disponibile per <b>Oracle</b>.
+      Disponibile per PostgreSQL, Oracle, SQL Server e SQLite.
     </p>
     <button class="btn primary" disabled={app.comparing} onclick={runCompare}>
       {app.comparing ? "Confronto in corso…" : "Confronta"}

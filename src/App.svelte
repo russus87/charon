@@ -29,7 +29,42 @@
   };
 
   let current = $derived(views[app.view] ?? views.connection);
+
+  // ---- Navigazione da tastiera ----
+  // Tasti 1–6 per le viste, "?" per la legenda. Disattivi quando si scrive in un
+  // campo o quando è aperto un popup/editor, per non rubare i tasti.
+  let showShortcuts = $state(false);
+  const NAV_KEYS = { 1: "connection", 2: "dump", 3: "import", 4: "clone", 5: "compare", 6: "tools" };
+  const NAV_HELP = [
+    ["1", "Connessioni"], ["2", "Dump"], ["3", "Importa"],
+    ["4", "Clona"], ["5", "Compare"], ["6", "Strumenti"], ["?", "Questa legenda"],
+  ];
+
+  function onKeydown(e) {
+    if (e.key === "Escape") {
+      showShortcuts = false;
+      return;
+    }
+    const t = e.target;
+    const typing =
+      t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+    if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+    // Non rubare i tasti mentre un popup o l'editor connessione è aperto.
+    if (app.confirm || app.resultModal || app.editing) return;
+    if (e.key === "?") {
+      showShortcuts = !showShortcuts;
+      e.preventDefault();
+      return;
+    }
+    const v = NAV_KEYS[e.key];
+    if (v) {
+      app.view = v;
+      e.preventDefault();
+    }
+  }
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <div class="shell">
   <Sidebar />
@@ -54,6 +89,27 @@
 
   <!-- Console ancorata in basso, comune a tutte le viste. -->
   <ResultPanel />
+
+  {#if showShortcuts}
+    <div
+      class="kbd-overlay"
+      role="button"
+      tabindex="-1"
+      aria-label="Chiudi"
+      onclick={() => (showShortcuts = false)}
+      onkeydown={(e) => e.key === "Escape" && (showShortcuts = false)}
+    >
+      <div class="kbd card" role="dialog" aria-label="Scorciatoie da tastiera" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} tabindex="-1">
+        <h3>Scorciatoie</h3>
+        <dl>
+          {#each NAV_HELP as [k, label]}
+            <div class="krow"><kbd>{k}</kbd><span>{label}</span></div>
+          {/each}
+        </dl>
+        <p class="kbd-foot">Esc per chiudere</p>
+      </div>
+    </div>
+  {/if}
 
   <!-- Conferma PRIMA dell'operazione, riepilogo DOPO: entrambi sopra tutto. -->
   <ConfirmModal />
@@ -114,5 +170,62 @@
   .view {
     flex: 1;
     min-height: 0;
+  }
+
+  /* Legenda scorciatoie (tasto ?) */
+  .kbd-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 10, 18, 0.5);
+    backdrop-filter: blur(2px);
+    display: grid;
+    place-items: center;
+    z-index: 70;
+    cursor: default;
+    animation: fade 0.12s ease;
+  }
+  .kbd {
+    width: min(340px, 92vw);
+    padding: 20px 22px;
+    cursor: default;
+  }
+  .kbd h3 {
+    margin: 0 0 14px;
+    font-size: 16px;
+  }
+  .kbd dl {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .krow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13.5px;
+    color: var(--text-dim);
+  }
+  .krow kbd {
+    font-family: var(--mono);
+    font-size: 12px;
+    min-width: 26px;
+    text-align: center;
+    padding: 4px 0;
+    border: 1px solid var(--border-strong);
+    border-bottom-width: 2px;
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .kbd-foot {
+    margin: 14px 0 0;
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .kbd-overlay {
+      animation: none;
+    }
   }
 </style>

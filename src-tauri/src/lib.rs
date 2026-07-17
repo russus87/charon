@@ -4,6 +4,7 @@
 //! l'orchestratore del core e restituisce un `OpResult` (gia' serializzabile),
 //! che riporta SEMPRE quale metodo (nativo o puro Rust) e' stato usato.
 
+use charon_core::compare::DbDiff;
 use charon_core::connections::{self, ConnectionProfile};
 use charon_core::model::{CloneOptions, Connection, EngineReport, Method, OpResult, Prefer};
 use charon_core::ops;
@@ -40,6 +41,30 @@ where
             artifact: None,
             log: Vec::new(),
         },
+    }
+}
+
+/// Come [`run_blocking`] ma per operazioni che restituiscono un valore proprio
+/// invece di un `OpResult` (es. il confronto, che produce un diff). L'errore
+/// arriva alla UI come stringa: `invoke` lo fa diventare una Promise rifiutata.
+async fn run_blocking_res<T, F>(app: AppHandle, f: F) -> std::result::Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> charon_core::Result<T> + Send + 'static,
+{
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let sink_app = app.clone();
+        charon_core::progress::set_sink(Some(Box::new(move |line: &str| {
+            let _ = sink_app.emit(PROGRESS_EVENT, line.to_string());
+        })));
+        let res = f();
+        charon_core::progress::set_sink(None);
+        res
+    })
+    .await;
+    match result {
+        Ok(res) => res.map_err(|e| e.to_string()),
+        Err(e) => Err(format!("operazione interrotta: {e}")),
     }
 }
 
@@ -106,6 +131,17 @@ async fn oracle_setup(app: AppHandle, path: String) -> OpResult {
     run_blocking(app, move || ops::oracle_setup(&path)).await
 }
 
+/// Confronta due database dello stesso motore (schema + conteggio righe).
+/// Sola lettura: non modifica nessuno dei due lati.
+#[tauri::command]
+async fn compare_databases(
+    app: AppHandle,
+    source: Connection,
+    target: Connection,
+) -> std::result::Result<DbDiff, String> {
+    run_blocking_res(app, move || ops::compare(&source, &target)).await
+}
+
 /// Elenco delle connessioni salvate.
 #[tauri::command]
 fn list_connections() -> Vec<ConnectionProfile> {
@@ -143,6 +179,7 @@ pub fn run() {
             dump_database,
             import_dump,
             clone_database,
+            compare_databases,
             oracle_load,
             oracle_setup,
             list_connections,

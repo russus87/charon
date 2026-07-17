@@ -6,6 +6,7 @@ import {
   dumpDatabase,
   importDump,
   cloneDatabase,
+  compareDatabases,
   listConnections,
   saveConnection,
   deleteConnection,
@@ -45,7 +46,10 @@ export const app = $state({
   connections: [], // ConnectionProfile[] salvate ({id, name, connection})
   editing: null, // profilo in modifica nella vista Connessioni (o null)
   // Connessione selezionata per ciascuna operazione (id del profilo).
-  sel: { dump: null, import: null, cloneSrc: null, cloneDst: null },
+  sel: { dump: null, import: null, cloneSrc: null, cloneDst: null, cmpSrc: null, cmpDst: null },
+  diff: null, // ultimo DbDiff del confronto (o null)
+  diffErr: null, // errore del confronto, se fallito
+  comparing: false, // confronto in corso
   prefer: "auto", // auto | native | rust
   dryRun: false, // anteprima: non modifica nulla, mostra solo il piano
   dumpPath: "", // file di destinazione del dump
@@ -88,11 +92,41 @@ export async function loadConnections() {
   }
   const first = app.connections[0]?.id ?? null;
   const valid = (id) => (app.connections.some((c) => c.id === id) ? id : first);
-  app.sel.dump = valid(app.sel.dump);
-  app.sel.import = valid(app.sel.import);
-  app.sel.cloneSrc = valid(app.sel.cloneSrc);
-  app.sel.cloneDst = valid(app.sel.cloneDst);
+  for (const k of ["dump", "import", "cloneSrc", "cloneDst", "cmpSrc", "cmpDst"]) {
+    app.sel[k] = valid(app.sel[k]);
+  }
 }
+
+// ---------------------------------------------------------------- confronto ---
+
+// Confronta i due database selezionati. Sola lettura: non modifica nulla.
+export async function runCompare() {
+  const src = connById(app.sel.cmpSrc);
+  const dst = connById(app.sel.cmpDst);
+  if (!src || !dst) {
+    app.diffErr = "Seleziona i due database da confrontare.";
+    app.diff = null;
+    return;
+  }
+  app.comparing = true;
+  app.diff = null;
+  app.diffErr = null;
+  app.liveLog = [];
+  try {
+    app.diff = await compareDatabases($state.snapshot(src), $state.snapshot(dst));
+  } catch (e) {
+    app.diffErr = String(e);
+  } finally {
+    app.comparing = false;
+  }
+}
+
+// I conteggi righe divergono? (solo se entrambi noti: null = non contabile)
+export const rowsDiffer = (t) =>
+  t.source_rows != null && t.target_rows != null && t.source_rows !== t.target_rows;
+
+// Una tabella è allineata se ha schema uguale e stesso numero di righe.
+export const tableAligned = (t) => t.status === "same" && !rowsDiffer(t);
 
 // Apre l'editor su una NUOVA connessione.
 export function newConnection() {

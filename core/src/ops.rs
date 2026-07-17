@@ -362,6 +362,27 @@ pub fn oracle_setup(path: &str) -> OpResult {
     }
 }
 
+/// Confronta due database dello stesso motore e restituisce il diff (schema +
+/// conteggio righe). **Sola lettura**: non modifica nessuno dei due lati.
+///
+/// Al momento è implementato solo per Oracle; gli altri motori restituiscono un
+/// errore esplicito invece di un diff vuoto che sembrerebbe "tutto uguale".
+pub fn compare(src: &Connection, dst: &Connection) -> Result<crate::compare::DbDiff> {
+    if src.engine != dst.engine {
+        return Err(Error::Unsupported(
+            "il confronto richiede due database dello stesso motore".into(),
+        ));
+    }
+    let (src, _gs) = prepare(src)?;
+    let (dst, _gd) = prepare(dst)?;
+    match src.engine {
+        Engine::Oracle => oracle::rust_compare(&src, &dst),
+        _ => Err(Error::Unsupported(
+            "il confronto è al momento disponibile solo per Oracle".into(),
+        )),
+    }
+}
+
 /// Verifica la connessione al database.
 pub fn test_connection(conn: &Connection, prefer: Prefer) -> OpResult {
     let (conn, _guard) = match prepare(conn) {

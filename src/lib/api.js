@@ -22,6 +22,10 @@ export const cloneDatabase = (source, target, prefer, options, dryRun) =>
   invoke("clone_database", { source, target, prefer, options, dryRun });
 
 // Import di un pacchetto SQL*Loader (.ctl/.ldr) in Oracle via sqlldr.
+// Confronto fra due database (schema + conteggio righe). Sola lettura.
+export const compareDatabases = (source, target) =>
+  invoke("compare_databases", { source, target });
+
 export const oracleLoad = (conn, packageDir, dryRun) =>
   invoke("oracle_load", { conn, packageDir, dryRun });
 

@@ -6,6 +6,7 @@
   import Dump from "./components/Dump.svelte";
   import Import from "./components/Import.svelte";
   import Clone from "./components/Clone.svelte";
+  import Compare from "./components/Compare.svelte";
   import Tools from "./components/Tools.svelte";
   import ResultModal from "./components/ResultModal.svelte";
 
@@ -21,6 +22,7 @@
     dump: { comp: Dump, title: "Dump", sub: "Esporta un database su file." },
     import: { comp: Import, title: "Importa", sub: "Carica un dump dentro un database." },
     clone: { comp: Clone, title: "Clona", sub: "Copia schema e dati da una sorgente a una destinazione." },
+    compare: { comp: Compare, title: "Compare", sub: "Confronta due database e vedi cosa differisce, in stile diff." },
     tools: { comp: Tools, title: "Strumenti", sub: "Cosa è disponibile sulla macchina e come si connette Charon." },
   };
 

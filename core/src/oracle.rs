@@ -8,6 +8,7 @@
 //!   che richiede l'Oracle Instant Client in fase di link (non nelle build CI).
 //!   Senza di essa, per Oracle servono i tool nativi.
 
+use crate::compare::{ColumnDiff, DbDiff, Status, TableDiff};
 use crate::model::*;
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
@@ -889,6 +890,20 @@ pub fn rust_clone(
         Err(no_driver())
     }
 }
+/// Confronta due database Oracle (schema + conteggio righe). Solo puro Rust:
+/// il confronto legge i cataloghi via driver, i tool nativi non c'entrano.
+pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
+    #[cfg(feature = "oracle-driver")]
+    {
+        return rustimpl::compare(src, dst);
+    }
+    #[cfg(not(feature = "oracle-driver"))]
+    {
+        let _ = (src, dst);
+        Err(no_driver())
+    }
+}
+
 pub fn rust_test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {
     #[cfg(feature = "oracle-driver")]
     {
@@ -1008,6 +1023,135 @@ mod rustimpl {
             });
         }
         Ok(cols)
+    }
+
+    // ------------------------------------------------------------- compare ---
+
+    /// Definizione leggibile di una colonna, usata per confrontare gli schemi.
+    fn col_def(c: &Col) -> String {
+        format!("{}{}", ddl_type(c), if c.not_null { " NOT NULL" } else { "" })
+    }
+
+    /// Conta le righe di una tabella. Best-effort: se non è contabile (permessi,
+    /// tabella in stato strano) restituisce None invece di far fallire il diff.
+    fn count_rows(c: &oracle::Connection, table: &str) -> Option<i64> {
+        c.query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), &[])
+            .ok()
+            .and_then(|r| r.get::<usize, i64>(0).ok())
+    }
+
+    /// Confronta schema e volume dati di due database Oracle.
+    pub fn compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
+        let s = connect(src)?;
+        let d = connect(dst)?;
+        let mut log = Vec::new();
+
+        let stables = list_tables(&s)?;
+        let dtables = list_tables(&d)?;
+        crate::progress::note(
+            &mut log,
+            format!(
+                "Tabelle: {} nella sorgente, {} nella destinazione",
+                stables.len(),
+                dtables.len()
+            ),
+        );
+
+        // Unione ordinata dei nomi visti da almeno una parte.
+        let mut names: Vec<String> = stables.iter().chain(dtables.iter()).cloned().collect();
+        names.sort();
+        names.dedup();
+
+        let mut tables = Vec::new();
+        for name in names {
+            let in_s = stables.contains(&name);
+            let in_d = dtables.contains(&name);
+
+            // Tabella presente da un solo lato: tutte le colonne sono "nuove".
+            if in_s != in_d {
+                let (c, status) = if in_s {
+                    (&s, Status::OnlySource)
+                } else {
+                    (&d, Status::OnlyTarget)
+                };
+                let cols = columns(c, &name)?;
+                let columns_diff = cols
+                    .iter()
+                    .map(|col| {
+                        let def = Some(col_def(col));
+                        ColumnDiff {
+                            name: col.name.clone(),
+                            status,
+                            source: if in_s { def.clone() } else { None },
+                            target: if in_s { None } else { def },
+                        }
+                    })
+                    .collect();
+                tables.push(TableDiff {
+                    name: name.clone(),
+                    status,
+                    columns: columns_diff,
+                    source_rows: if in_s { count_rows(&s, &name) } else { None },
+                    target_rows: if in_s { None } else { count_rows(&d, &name) },
+                });
+                continue;
+            }
+
+            // Presente da entrambe le parti: confronto colonna per colonna.
+            let scols = columns(&s, &name)?;
+            let dcols = columns(&d, &name)?;
+            let mut cnames: Vec<String> = scols
+                .iter()
+                .chain(dcols.iter())
+                .map(|c| c.name.clone())
+                .collect();
+            cnames.sort();
+            cnames.dedup();
+
+            let mut columns_diff = Vec::new();
+            for cn in cnames {
+                let sc = scols.iter().find(|c| c.name == cn).map(col_def);
+                let dc = dcols.iter().find(|c| c.name == cn).map(col_def);
+                let status = match (&sc, &dc) {
+                    (Some(a), Some(b)) if a == b => Status::Same,
+                    (Some(_), Some(_)) => Status::Changed,
+                    (Some(_), None) => Status::OnlySource,
+                    (None, Some(_)) => Status::OnlyTarget,
+                    (None, None) => continue, // impossibile: il nome viene da un lato
+                };
+                // Le colonne identiche non entrano nel diff: su tabelle larghe
+                // renderebbero illeggibile ciò che conta davvero.
+                if status != Status::Same {
+                    columns_diff.push(ColumnDiff {
+                        name: cn,
+                        status,
+                        source: sc,
+                        target: dc,
+                    });
+                }
+            }
+
+            let status = if columns_diff.is_empty() {
+                Status::Same
+            } else {
+                Status::Changed
+            };
+            tables.push(TableDiff {
+                name: name.clone(),
+                status,
+                columns: columns_diff,
+                source_rows: count_rows(&s, &name),
+                target_rows: count_rows(&d, &name),
+            });
+        }
+
+        let diff = DbDiff {
+            tables,
+            source_label: connect_string(src),
+            target_label: connect_string(dst),
+            log,
+        };
+        Ok(diff)
     }
 
     /// Tipo da usare in CREATE TABLE (target Oracle: riusa il tipo originale).

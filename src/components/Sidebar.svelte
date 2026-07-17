@@ -14,6 +14,9 @@
       icon: "M12 14V4m0 0l3 3m-3-3l-3 3M5 14v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" },
     { id: "clone", label: "Clona",
       icon: "M9 8h10v11H9zM5 5h10v2H7v9H5z" },
+    // Compare: due rami che divergono, come un diff/branch.
+    { id: "compare", label: "Compare",
+      icon: "M6 4v9a3 3 0 0 0 3 3h6m0 0l-3-3m3 3l-3 3M6 4a2 2 0 1 0 0-.1zM18 20a2 2 0 1 0 0-.1z" },
     { id: "tools", label: "Strumenti",
       icon: "M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z" },
   ];

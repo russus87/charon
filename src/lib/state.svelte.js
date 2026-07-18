@@ -236,6 +236,20 @@ export function addMaskRule() {
   app.cloneOpts.mask.push({ table: "", column: "", kind: "hash", value: "" });
 }
 
+// Preset per i dati sensibili comuni: aggiungono una regola con la strategia
+// già scelta e un nome-colonna tipico (da adeguare alla propria tabella).
+export const MASK_PRESETS = [
+  { label: "Email", column: "email", kind: "email" },
+  { label: "Codice fiscale", column: "codice_fiscale", kind: "hash" },
+  { label: "IBAN", column: "iban", kind: "redact" },
+  { label: "Telefono", column: "telefono", kind: "redact" },
+  { label: "Nome", column: "nome", kind: "hash" },
+  { label: "Password", column: "password", kind: "null" },
+];
+export function addMaskPreset(p) {
+  app.cloneOpts.mask.push({ table: "", column: p.column, kind: p.kind, value: "" });
+}
+
 export function removeMaskRule(i) {
   app.cloneOpts.mask.splice(i, 1);
 }

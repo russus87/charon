@@ -6,7 +6,9 @@
     engineLabel,
     addMaskRule,
     removeMaskRule,
+    addMaskPreset,
     MASK_KINDS,
+    MASK_PRESETS,
   } from "../lib/state.svelte.js";
   import ConnPicker from "./ConnPicker.svelte";
   import PreferPicker from "./PreferPicker.svelte";
@@ -66,10 +68,18 @@
           <p class="warn">Il mascheramento è disponibile solo per PostgreSQL.</p>
         {/if}
 
+        <div class="presets">
+          <span class="presets-lbl">Preset:</span>
+          {#each MASK_PRESETS as p}
+            <button class="chip" title={`Aggiunge una regola ${p.kind} per "${p.column}"`}
+                    onclick={() => addMaskPreset(p)}>+ {p.label}</button>
+          {/each}
+        </div>
+
         {#if opts.mask.length === 0}
           <p class="hint">
-            Nessuna regola. Aggiungine per anonimizzare colonne sensibili durante
-            il clone prod→test (forza il metodo puro Rust).
+            Nessuna regola. Usa un preset (strategia già scelta) o "+ Regola" per
+            anonimizzare colonne sensibili nel clone prod→test (forza il puro Rust).
           </p>
         {/if}
 
@@ -157,6 +167,32 @@
   .mask-title {
     font-size: 13px;
     font-weight: 600;
+  }
+  .presets {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .presets-lbl {
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+  .chip {
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text-dim);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  }
+  .chip:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
   }
   .hint,
   .warn {

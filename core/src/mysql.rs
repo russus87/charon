@@ -284,6 +284,20 @@ pub fn rust_data_diff(src: &Connection, dst: &Connection, table: &str) -> Result
     }
 }
 
+/// Esporta i dati di tutte le tabelle in CSV/JSON, un file per tabella dentro
+/// `out_dir`. Sincrona come `rust_compare`: nessun runtime async necessario.
+pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+    #[cfg(feature = "mysql-driver")]
+    {
+        return rustimpl::export(conn, out_dir, format);
+    }
+    #[cfg(not(feature = "mysql-driver"))]
+    {
+        let _ = (conn, out_dir, format);
+        Err(no_driver())
+    }
+}
+
 #[cfg(feature = "mysql-driver")]
 mod rustimpl {
     use super::*;
@@ -802,6 +816,82 @@ mod rustimpl {
         run_script(dst, &sql, log)?;
         crate::progress::note(log, "Clonazione completata.");
         Ok(())
+    }
+
+    // ------------------------------------------------------------- export ---
+
+    /// Valore grezzo (non un letterale SQL) di una cella: `NULL` → `None`,
+    /// altrimenti la stringa "naturale" del valore. Col protocollo testuale di
+    /// `query_iter` tutto ciò che non è NULL arriva quasi sempre come
+    /// [`Value::Bytes`], che qui rendiamo come UTF-8 (con sostituzione dei
+    /// byte non validi, non dovrebbe capitare su colonne testuali/numeriche).
+    fn raw_value(v: &Value) -> Option<String> {
+        match v {
+            Value::NULL => None,
+            Value::Int(i) => Some(i.to_string()),
+            Value::UInt(u) => Some(u.to_string()),
+            Value::Float(f) => Some(f.to_string()),
+            Value::Double(f) => Some(f.to_string()),
+            Value::Bytes(b) => Some(String::from_utf8_lossy(b).into_owned()),
+            Value::Date(y, mo, d, h, mi, s, us) => {
+                if *us > 0 {
+                    Some(format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}.{us:06}"))
+                } else {
+                    Some(format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}"))
+                }
+            }
+            Value::Time(neg, days, h, mi, s, us) => {
+                let sign = if *neg { "-" } else { "" };
+                let hh = *days as u64 * 24 + *h as u64;
+                if *us > 0 {
+                    Some(format!("{sign}{hh:02}:{mi:02}:{s:02}.{us:06}"))
+                } else {
+                    Some(format!("{sign}{hh:02}:{mi:02}:{s:02}"))
+                }
+            }
+        }
+    }
+
+    /// Esporta i dati di ogni tabella del database in un file CSV/JSON dentro
+    /// `out_dir` (un file per tabella, nome `<tabella>.<estensione>`). Ritorna
+    /// i percorsi scritti.
+    pub fn export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+        let fmt = crate::export::DataFormat::from_str(format)
+            .ok_or_else(|| Error::Unsupported("formato non supportato".into()))?;
+        std::fs::create_dir_all(out_dir)?;
+
+        let mut client = connect(conn)?;
+        let tables = list_tables(&mut client, &conn.database)?;
+
+        let mut files = Vec::new();
+        for table in &tables {
+            let qr = client
+                .query_iter(format!("SELECT * FROM `{table}`"))
+                .map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+            let columns: Vec<String> = qr
+                .columns()
+                .as_ref()
+                .iter()
+                .map(|c| c.name_str().into_owned())
+                .collect();
+
+            let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+            for row in qr {
+                let row = row.map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+                let mut vals = Vec::with_capacity(row.len());
+                for i in 0..row.len() {
+                    let v = row.as_ref(i).cloned().unwrap_or(Value::NULL);
+                    vals.push(raw_value(&v));
+                }
+                rows.push(vals);
+            }
+
+            let content = crate::export::render(fmt, &columns, &rows);
+            let path = format!("{out_dir}/{table}.{}", fmt.ext());
+            std::fs::write(&path, content)?;
+            files.push(path);
+        }
+        Ok(files)
     }
 
     pub fn test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {

@@ -329,6 +329,21 @@ pub fn rust_data_diff(src: &Connection, dst: &Connection, table: &str) -> Result
     }
 }
 
+/// Esporta i dati di tutte le tabelle in CSV/JSON, un file per tabella, in
+/// `out_dir`. Ritorna i percorsi dei file scritti. Sincrona come le altre
+/// operazioni SQLite.
+pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+    #[cfg(feature = "sqlite-driver")]
+    {
+        return rustimpl::export(conn, out_dir, format);
+    }
+    #[cfg(not(feature = "sqlite-driver"))]
+    {
+        let _ = (conn, out_dir, format);
+        Err(no_driver())
+    }
+}
+
 #[cfg(feature = "sqlite-driver")]
 mod rustimpl {
     use super::*;
@@ -803,6 +818,58 @@ mod rustimpl {
         c.execute_batch(&sql).map_err(|e| Error::Msg(e.to_string()))?;
         crate::progress::note(log, "Clonazione completata.");
         Ok(())
+    }
+
+    /// Esporta i dati di tutte le tabelle utente in CSV/JSON, un file per
+    /// tabella, dentro `out_dir`. A differenza del dump SQL qui i valori sono
+    /// **grezzi** (non letterali SQL): servono a scambiare dati con altri
+    /// strumenti, non a essere rieseguiti come SQL.
+    pub fn export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+        let fmt = crate::export::DataFormat::from_str(format)
+            .ok_or_else(|| Error::Unsupported("formato non supportato".into()))?;
+        std::fs::create_dir_all(out_dir)?;
+
+        let c = open_ro(db_path(conn))?;
+        let tables = list_tables(&c)?;
+
+        let mut files = Vec::with_capacity(tables.len());
+        for table in tables {
+            let mut st = c
+                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+            let columns: Vec<String> = st.column_names().into_iter().map(|s| s.to_string()).collect();
+            let ncol = columns.len();
+
+            let mut sql_rows = st.query([]).map_err(|e| Error::Msg(e.to_string()))?;
+            let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+            while let Some(r) = sql_rows.next().map_err(|e| Error::Msg(e.to_string()))? {
+                let mut row = Vec::with_capacity(ncol);
+                for i in 0..ncol {
+                    let v = r.get_ref(i).map_err(|e| Error::Msg(e.to_string()))?;
+                    let cell = match v {
+                        ValueRef::Null => None,
+                        ValueRef::Integer(i) => Some(i.to_string()),
+                        ValueRef::Real(f) => Some(f.to_string()),
+                        ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
+                        ValueRef::Blob(b) => {
+                            let mut s = String::with_capacity(b.len() * 2);
+                            for byte in b {
+                                s.push_str(&format!("{byte:02x}"));
+                            }
+                            Some(s)
+                        }
+                    };
+                    row.push(cell);
+                }
+                rows.push(row);
+            }
+
+            let rendered = crate::export::render(fmt, &columns, &rows);
+            let path = format!("{out_dir}/{table}.{}", fmt.ext());
+            std::fs::write(&path, rendered)?;
+            files.push(path);
+        }
+        Ok(files)
     }
 
     pub fn test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {

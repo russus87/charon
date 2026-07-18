@@ -284,6 +284,20 @@ pub fn rust_data_diff(src: &Connection, dst: &Connection, table: &str) -> Result
     }
 }
 
+/// Esporta i dati di tutte le tabelle di `conn` in `out_dir`, un file per
+/// tabella, nel formato scelto (`csv`/`json`). Ritorna i percorsi scritti.
+pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+    #[cfg(feature = "mssql-driver")]
+    {
+        return rustimpl::runtime()?.block_on(rustimpl::export(conn, out_dir, format));
+    }
+    #[cfg(not(feature = "mssql-driver"))]
+    {
+        let _ = (conn, out_dir, format);
+        Err(Error::Unsupported("fallback SQL Server non disponibile in questa build".into()))
+    }
+}
+
 #[cfg(feature = "mssql-driver")]
 mod rustimpl {
     use super::*;
@@ -680,6 +694,88 @@ mod rustimpl {
             sample,
             note,
         })
+    }
+
+    // -------------------------------------------------------------- export ---
+
+    /// Esporta i dati di tutte le BASE TABLE in CSV/JSON, un file per tabella,
+    /// riusando `crate::export::render` per la resa (stesso formato per tutti
+    /// i motori). Le righe vengono lette con `FOR JSON`, come `dump_sql`, ma qui
+    /// i valori restano grezzi (nessun letterale SQL): `None` per NULL, la
+    /// stringa così com'è per `Value::String`, `to_string()` per numeri/bool.
+    pub async fn export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+        let fmt = crate::export::DataFormat::from_str(format)
+            .ok_or_else(|| Error::Unsupported("formato non supportato".into()))?;
+        std::fs::create_dir_all(out_dir)?;
+
+        let mut client = connect(conn).await?;
+        let tables = list_tables(&mut client).await?;
+
+        let mut files = Vec::new();
+        for (schema, table) in &tables {
+            let full = format!("[{schema}].[{table}]");
+
+            // Nomi colonna in ordine (come nelle altre funzioni di questo modulo).
+            let col_rows = query(
+                &mut client,
+                &format!(
+                    "SELECT c.name FROM sys.columns c \
+                     WHERE c.object_id = OBJECT_ID('{full}') ORDER BY c.column_id"
+                ),
+            )
+            .await?;
+            let columns: Vec<String> = col_rows.iter().map(|r| s(r, 0)).collect();
+            if columns.is_empty() {
+                continue;
+            }
+
+            // Righe: FOR JSON restituisce un'unica stringa JSON spezzata su più
+            // righe di risultato, da ricomporre prima del parsing (come dump_sql).
+            let json_rows = query(
+                &mut client,
+                &format!("SELECT * FROM {full} FOR JSON PATH, INCLUDE_NULL_VALUES"),
+            )
+            .await?;
+            let mut json = String::new();
+            for r in &json_rows {
+                json.push_str(&s(r, 0));
+            }
+            let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+            if !json.trim().is_empty() {
+                let parsed: Value =
+                    serde_json::from_str(&json).map_err(|e| Error::Msg(e.to_string()))?;
+                if let Value::Array(items) = parsed {
+                    for item in &items {
+                        let row = columns
+                            .iter()
+                            .map(|col| match item.get(col) {
+                                None | Some(Value::Null) => None,
+                                Some(Value::String(v)) => Some(v.clone()),
+                                Some(other) => Some(other.to_string()),
+                            })
+                            .collect();
+                        rows.push(row);
+                    }
+                }
+            }
+
+            let rendered = crate::export::render(fmt, &columns, &rows);
+
+            // Nome file: "schema.tabella", con i caratteri non alfanumerici
+            // (a parte '.', '_', '-') sostituiti, per evitare percorsi invalidi.
+            let safe_name: String = format!("{schema}.{table}")
+                .chars()
+                .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+                .collect();
+            let path = std::path::Path::new(out_dir)
+                .join(format!("{safe_name}.{}", fmt.ext()))
+                .display()
+                .to_string();
+            std::fs::write(&path, rendered)?;
+            files.push(path);
+        }
+
+        Ok(files)
     }
 
     fn lit(v: &Value) -> String {

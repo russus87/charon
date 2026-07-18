@@ -440,6 +440,19 @@ pub fn compare_data(
     }
 }
 
+/// Esporta i **dati** di tutte le tabelle in `out_dir`, un file per tabella nel
+/// formato scelto ("csv" o "json"). Sola lettura. Ritorna i file scritti.
+pub fn export_data(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+    let (conn, _guard) = prepare(conn)?;
+    match conn.engine {
+        Engine::Postgres => postgres::rust_export(&conn, out_dir, format),
+        Engine::Oracle => oracle::rust_export(&conn, out_dir, format),
+        Engine::Sqlserver => mssql::rust_export(&conn, out_dir, format),
+        Engine::Sqlite => sqlite::rust_export(&conn, out_dir, format),
+        Engine::Mysql => mysql::rust_export(&conn, out_dir, format),
+    }
+}
+
 /// Verifica la connessione al database.
 pub fn test_connection(conn: &Connection, prefer: Prefer) -> OpResult {
     let (conn, _guard) = match prepare(conn) {

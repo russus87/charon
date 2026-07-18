@@ -352,6 +352,25 @@ pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
     }
 }
 
+/// Esporta i dati di tutte le tabelle `public` in file CSV/JSON (uno per
+/// tabella) dentro `out_dir`. Stesso pattern delle altre `rust_*`: runtime
+/// tokio dedicato + `block_on`. Ritorna i percorsi dei file scritti.
+pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+    #[cfg(feature = "pg-driver")]
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| Error::Msg(format!("runtime tokio: {e}")))?;
+        return rt.block_on(rustimpl::export(conn, out_dir, format));
+    }
+    #[cfg(not(feature = "pg-driver"))]
+    {
+        let _ = (conn, out_dir, format);
+        Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
+    }
+}
+
 /// Confronta i **dati** di una tabella riga per riga (per chiave primaria, o
 /// per riga intera se la tabella non ne ha una): a differenza di `rust_compare`,
 /// che si ferma al conteggio, distingue righe aggiunte, rimosse e modificate.
@@ -1108,5 +1127,59 @@ mod rustimpl {
             sample,
             note,
         })
+    }
+
+    // ---------------------------------------------------------- export ---
+
+    /// Esporta i dati di tutte le tabelle `public` in file CSV/JSON (uno per
+    /// tabella) dentro `out_dir`. Le colonne vengono prese da
+    /// information_schema (ordine e presenza garantiti anche su tabelle
+    /// vuote); i valori grezzi arrivano da `to_json` come nel resto del file.
+    pub async fn export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+        let fmt = crate::export::DataFormat::from_str(format)
+            .ok_or_else(|| Error::Unsupported("formato non supportato".into()))?;
+        std::fs::create_dir_all(out_dir)?;
+
+        let client = connect(conn).await?;
+        let tables = list_tables(&client).await?;
+
+        let mut written = Vec::new();
+        for table in &tables {
+            crate::progress::emit(&format!("  export {table}…"));
+
+            let columns: Vec<String> = column_defs(&client, table)
+                .await?
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+
+            let json_rows = client
+                .query(format!("SELECT to_json(t) FROM \"{table}\" t").as_str(), &[])
+                .await
+                .map_err(perr)?;
+
+            let mut rows: Vec<Vec<Option<String>>> = Vec::with_capacity(json_rows.len());
+            for r in &json_rows {
+                let row_json: Value = r.get(0);
+                let row: Vec<Option<String>> = columns
+                    .iter()
+                    .map(|c| match row_json.get(c) {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(s)) => Some(s.clone()),
+                        Some(other) => Some(other.to_string()),
+                    })
+                    .collect();
+                rows.push(row);
+            }
+
+            let content = crate::export::render(fmt, &columns, &rows);
+            let path = std::path::Path::new(out_dir)
+                .join(format!("{table}.{}", fmt.ext()))
+                .display()
+                .to_string();
+            std::fs::write(&path, content)?;
+            written.push(path);
+        }
+        Ok(written)
     }
 }

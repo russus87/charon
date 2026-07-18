@@ -142,6 +142,18 @@ async fn compare_databases(
     run_blocking_res(app, move || ops::compare(&source, &target)).await
 }
 
+/// Esporta i dati di tutte le tabelle in `out_dir` (un file per tabella) nel
+/// formato scelto ("csv" o "json"). Sola lettura. Ritorna i file scritti.
+#[tauri::command]
+async fn export_data(
+    app: AppHandle,
+    conn: Connection,
+    out_dir: String,
+    format: String,
+) -> std::result::Result<Vec<String>, String> {
+    run_blocking_res(app, move || ops::export_data(&conn, &out_dir, &format)).await
+}
+
 /// Confronto DATI (riga per riga, per chiave primaria) di una singola tabella.
 /// Sola lettura, eseguito su richiesta.
 #[tauri::command]
@@ -212,6 +224,7 @@ pub fn run() {
             clone_database,
             compare_databases,
             compare_table_data,
+            export_data,
             export_diff,
             oracle_load,
             oracle_setup,

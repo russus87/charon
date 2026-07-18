@@ -444,3 +444,49 @@ fn data_diff_rileva_righe_modificate_e_aggiunte() {
         diff2.sample
     );
 }
+
+/// Export dei dati in CSV: un file per tabella, con header e valori grezzi
+/// (non letterali SQL: niente apici attorno al testo, niente X'..' pei BLOB).
+#[test]
+fn export_csv_scrive_un_file_per_tabella() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let src = seeded(d, "src", Prefer::Rust);
+    let out_dir = d.join("export_csv");
+
+    let files = charon_core::sqlite::rust_export(&src, &out_dir.display().to_string(), "csv")
+        .expect("export csv");
+    assert_eq!(files.len(), 2, "attese 2 tabelle esportate: {files:?}");
+
+    let autori_csv = out_dir.join("autori.csv");
+    assert!(autori_csv.exists(), "manca autori.csv");
+    let content = std::fs::read_to_string(&autori_csv).unwrap();
+    assert!(content.starts_with("id,nome,voto,foto,note\r\n"), "header CSV inatteso: {content}");
+    assert!(content.contains("Manzoni"), "valore atteso assente: {content}");
+    assert!(content.contains("deadbeef"), "BLOB non esadecimale: {content}");
+    // Il valore grezzo non ha apici SQL attorno al testo.
+    assert!(!content.contains("'Manzoni'"), "il CSV non deve contenere letterali SQL: {content}");
+
+    let libri_csv = out_dir.join("libri.csv");
+    assert!(libri_csv.exists(), "manca libri.csv");
+}
+
+/// Stesso giro in JSON: valori come stringhe (o null), array di oggetti.
+#[test]
+fn export_json_produce_json_valido_con_null() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let src = seeded(d, "src", Prefer::Rust);
+    let out_dir = d.join("export_json");
+
+    let files = charon_core::sqlite::rust_export(&src, &out_dir.display().to_string(), "json")
+        .expect("export json");
+    assert_eq!(files.len(), 2, "attese 2 tabelle esportate: {files:?}");
+
+    let autori_json = out_dir.join("autori.json");
+    let content = std::fs::read_to_string(&autori_json).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).expect("json valido");
+    assert!(parsed.is_array());
+    assert!(content.contains("\"note\": null"), "NULL non reso come null: {content}");
+    assert!(content.contains("Manzoni"), "valore atteso assente: {content}");
+}

@@ -30,6 +30,13 @@ export const compareDatabases = (source, target) =>
 export const compareTableData = (source, target, table) =>
   invoke("compare_table_data", { source, target, table });
 
+// Esporta i dati di tutte le tabelle in una cartella (CSV o JSON).
+export const exportData = (conn, outDir, format) =>
+  invoke("export_data", { conn, outDir, format });
+
+// Sceglie una cartella (per l'export dati, che scrive un file per tabella).
+export const pickDirectory = () => open({ directory: true, multiple: false });
+
 // Ri-esegue il confronto e ne scrive il report su file (format: "html" | "json").
 export const exportDiff = (source, target, format, out) =>
   invoke("export_diff", { source, target, format, out });

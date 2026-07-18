@@ -904,6 +904,21 @@ pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
     }
 }
 
+/// Esporta i dati di tutte le tabelle dello schema Oracle in file CSV/JSON,
+/// uno per tabella, dentro `out_dir`. Sola lettura: nessuna scrittura sul
+/// database. Ritorna i percorsi dei file scritti.
+pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+    #[cfg(feature = "oracle-driver")]
+    {
+        return rustimpl::export(conn, out_dir, format);
+    }
+    #[cfg(not(feature = "oracle-driver"))]
+    {
+        let _ = (conn, out_dir, format);
+        Err(no_driver())
+    }
+}
+
 /// Confronto DATI riga-per-riga di una tabella Oracle: righe accoppiate per
 /// chiave primaria (o per riga intera in assenza di PK), classificate come
 /// solo-sorgente / solo-destinazione / cambiate / uguali.
@@ -1478,6 +1493,55 @@ mod rustimpl {
         std::fs::write(out, sql)?;
         log.push(format!("Dump SQL scritto in {out}"));
         Ok(())
+    }
+
+    /// Esporta i dati di ogni tabella dello schema in un file CSV/JSON separato
+    /// dentro `out_dir` (uno per tabella, nome `<tabella>.<estensione>`). Sola
+    /// lettura: nessuna scrittura sul database. I formati NLS di sessione sono
+    /// già normalizzati da [`connect`], così i valori numerici/data letti come
+    /// testo sono deterministici. Ritorna i percorsi dei file scritti.
+    pub fn export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
+        let fmt = crate::export::DataFormat::from_str(format)
+            .ok_or_else(|| Error::Unsupported("formato non supportato".into()))?;
+        std::fs::create_dir_all(out_dir)?;
+
+        let c = connect(conn)?;
+        let tables = list_tables(&c)?;
+
+        let mut files = Vec::new();
+        for table in &tables {
+            let cols = columns(&c, table)?;
+            if cols.is_empty() {
+                continue;
+            }
+            let colnames: Vec<String> = cols.iter().map(|col| col.name.clone()).collect();
+            // select_list converte NUMBER/DATE/TIMESTAMP in testo (TO_CHAR) così
+            // il valore letto è già una rappresentazione stabile; niente letterali
+            // SQL qui, solo il valore grezzo per riga/colonna.
+            let sel = select_list(&cols);
+            let query_rows = c
+                .query(&format!("SELECT {sel} FROM \"{table}\""), &[])
+                .map_err(|e| Error::Msg(e.to_string()))?;
+
+            let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+            for r in query_rows {
+                let r = r.map_err(|e| Error::Msg(e.to_string()))?;
+                let mut vals = Vec::with_capacity(cols.len());
+                for i in 0..cols.len() {
+                    let v = r
+                        .get::<usize, Option<String>>(i)
+                        .map_err(|e| Error::Msg(e.to_string()))?;
+                    vals.push(v);
+                }
+                rows.push(vals);
+            }
+
+            let rendered = crate::export::render(fmt, &colnames, &rows);
+            let path = std::path::Path::new(out_dir).join(format!("{table}.{}", fmt.ext()));
+            std::fs::write(&path, rendered)?;
+            files.push(path.display().to_string());
+        }
+        Ok(files)
     }
 
     pub fn clone(src: &Connection, dst: &Connection, dry: bool, log: &mut Vec<String>) -> Result<()> {

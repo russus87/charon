@@ -6,7 +6,7 @@
 
 use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
-use crate::schema::{AbstractType, Column, SchemaModel, Table};
+use crate::schema::{AbstractType, Column, ForeignKey, Index, SchemaModel, Table};
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
 use std::process::Command;
@@ -1046,9 +1046,89 @@ mod rustimpl {
         }
     }
 
-    /// Legge lo schema neutro (tabelle + colonne + chiave primaria) dello
-    /// schema `public`: la base per il confronto e la clonazione cross-motore
-    /// (vedi `crate::schema`).
+    /// Ripulisce un `column_default` grezzo dal cast esplicito che Postgres
+    /// aggiunge in coda (es. `'foo'::character varying` → `'foo'`): prendiamo
+    /// solo la parte prima di `::`, se presente.
+    fn strip_cast(raw: &str) -> String {
+        match raw.split_once("::") {
+            Some((before, _)) => before.trim().to_string(),
+            None => raw.trim().to_string(),
+        }
+    }
+
+    /// Indici non-PK di una tabella, raggruppati per nome.
+    async fn read_indexes(client: &tokio_postgres::Client, table: &str) -> Result<Vec<Index>> {
+        let rows = client
+            .query(
+                "SELECT i.relname AS idx, ix.indisunique, a.attname \
+                 FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid \
+                 JOIN pg_class t ON t.oid = ix.indrelid \
+                 JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey) \
+                 WHERE t.relname = $1 AND NOT ix.indisprimary \
+                 ORDER BY i.relname, array_position(ix.indkey, a.attnum)",
+                &[&table],
+            )
+            .await
+            .map_err(perr)?;
+
+        let mut indexes: Vec<Index> = Vec::new();
+        for r in &rows {
+            let idx: String = r.get(0);
+            let unique: bool = r.get(1);
+            let col: String = r.get(2);
+            match indexes.iter_mut().find(|i| i.name == idx) {
+                Some(existing) => existing.columns.push(col),
+                None => indexes.push(Index { name: idx, columns: vec![col], unique }),
+            }
+        }
+        Ok(indexes)
+    }
+
+    /// Foreign key di una tabella, raggruppate per nome del vincolo.
+    async fn read_foreign_keys(client: &tokio_postgres::Client, table: &str) -> Result<Vec<ForeignKey>> {
+        let rows = client
+            .query(
+                "SELECT con.conname, att.attname AS col, \
+                        cl.relname AS ref_table, att2.attname AS ref_col \
+                 FROM pg_constraint con \
+                 JOIN pg_class rel ON rel.oid = con.conrelid \
+                 JOIN pg_class cl ON cl.oid = con.confrelid \
+                 JOIN unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) ON true \
+                 JOIN unnest(con.confkey) WITH ORDINALITY AS fk(attnum, ord) ON fk.ord = k.ord \
+                 JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = k.attnum \
+                 JOIN pg_attribute att2 ON att2.attrelid = con.confrelid AND att2.attnum = fk.attnum \
+                 WHERE con.contype = 'f' AND rel.relname = $1 \
+                 ORDER BY con.conname, k.ord",
+                &[&table],
+            )
+            .await
+            .map_err(perr)?;
+
+        let mut fks: Vec<ForeignKey> = Vec::new();
+        for r in &rows {
+            let conname: String = r.get(0);
+            let col: String = r.get(1);
+            let ref_table: String = r.get(2);
+            let ref_col: String = r.get(3);
+            match fks.iter_mut().find(|f| f.name == conname) {
+                Some(existing) => {
+                    existing.columns.push(col);
+                    existing.ref_columns.push(ref_col);
+                }
+                None => fks.push(ForeignKey {
+                    name: conname,
+                    columns: vec![col],
+                    ref_table,
+                    ref_columns: vec![ref_col],
+                }),
+            }
+        }
+        Ok(fks)
+    }
+
+    /// Legge lo schema neutro (tabelle + colonne + chiave primaria + indici +
+    /// foreign key) dello schema `public`: la base per il confronto e la
+    /// clonazione cross-motore (vedi `crate::schema`).
     pub async fn read_schema(conn: &Connection) -> Result<SchemaModel> {
         let client = connect(conn).await?;
         let table_names = list_tables(&client).await?;
@@ -1060,7 +1140,8 @@ mod rustimpl {
             let cols = client
                 .query(
                     "SELECT column_name, data_type, character_maximum_length, \
-                     numeric_precision, numeric_scale, is_nullable \
+                     numeric_precision, numeric_scale, is_nullable, \
+                     is_identity, column_default \
                      FROM information_schema.columns \
                      WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position",
                     &[table],
@@ -1089,12 +1170,35 @@ mod rustimpl {
                 let precision: Option<i32> = c.get(3);
                 let scale: Option<i32> = c.get(4);
                 let nullable: String = c.get(5);
+                let is_identity: String = c.get(6);
+                let column_default: Option<String> = c.get(7);
                 let ty = map_abstract_type(&dtype, maxlen, precision, scale);
                 let primary_key = pk_cols.contains(&name);
-                columns.push(Column { name, ty, nullable: nullable == "YES", primary_key });
+
+                let auto_increment = is_identity == "YES"
+                    || column_default
+                        .as_deref()
+                        .map_or(false, |d| d.starts_with("nextval("));
+                let default = if auto_increment {
+                    None
+                } else {
+                    column_default.map(|d| strip_cast(&d))
+                };
+
+                columns.push(Column {
+                    name,
+                    ty,
+                    nullable: nullable == "YES",
+                    primary_key,
+                    auto_increment,
+                    default,
+                });
             }
 
-            tables.push(Table { name: table.clone(), columns });
+            let indexes = read_indexes(&client, table).await?;
+            let foreign_keys = read_foreign_keys(&client, table).await?;
+
+            tables.push(Table { name: table.clone(), columns, indexes, foreign_keys });
         }
 
         Ok(SchemaModel { tables })

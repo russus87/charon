@@ -564,3 +564,102 @@ fn read_schema_mappa_i_tipi_sulle_affinita_sqlite() {
     assert_eq!(col("giorno").ty, AbstractType::Date);
     assert_eq!(col("ora").ty, AbstractType::Time);
 }
+
+/// Lo schema neutro deve riportare anche `auto_increment`/`default`, indici
+/// non-PK e foreign key — i campi aggiunti a `Column`/`Table` per la
+/// clonazione cross-motore.
+#[test]
+fn read_schema_legge_default_auto_increment_indici_e_fk() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let sql = d.join("relazioni.sql");
+    write(
+        &sql,
+        r#"
+        CREATE TABLE autori (
+          id INTEGER PRIMARY KEY,
+          nome TEXT NOT NULL DEFAULT 'anonimo',
+          email TEXT
+        );
+        CREATE UNIQUE INDEX idx_autori_email ON autori(email);
+
+        CREATE TABLE libri (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          titolo TEXT NOT NULL,
+          autore_id INTEGER,
+          anno INTEGER DEFAULT 2000,
+          FOREIGN KEY (autore_id) REFERENCES autori(id)
+        );
+        CREATE INDEX idx_libri_titolo ON libri(titolo);
+
+        -- Chiave primaria composta: nessuna delle due colonne è auto-increment,
+        -- anche se entrambe sono di tipo INTEGER (non è l'alias di rowid).
+        CREATE TABLE assoc (
+          a INTEGER,
+          b INTEGER,
+          PRIMARY KEY (a, b)
+        );
+        "#,
+    );
+    let db = conn(&d.join("relazioni.db"));
+    ok(
+        ops::import(&db, &sql.display().to_string(), Prefer::Rust, false),
+        "import schema relazioni",
+    );
+
+    let model = charon_core::sqlite::rust_read_schema(&db).expect("read_schema");
+
+    fn col<'a>(t: &'a charon_core::schema::Table, name: &str) -> &'a charon_core::schema::Column {
+        t.columns
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("colonna '{name}' assente: {:?}", t.columns))
+    }
+
+    let autori = model.table("autori").expect("tabella 'autori' assente");
+
+    // INTEGER PRIMARY KEY singola -> alias di rowid -> auto-increment.
+    let id = col(autori, "id");
+    assert!(id.auto_increment, "'autori.id' doveva essere auto-increment");
+    assert_eq!(id.default, None);
+
+    let nome = col(autori, "nome");
+    assert!(!nome.auto_increment);
+    assert_eq!(nome.default.as_deref(), Some("'anonimo'"));
+
+    // Indice UNIQUE non-PK su autori.email.
+    assert_eq!(autori.indexes.len(), 1, "indici inattesi: {:?}", autori.indexes);
+    let idx_email = &autori.indexes[0];
+    assert_eq!(idx_email.name, "idx_autori_email");
+    assert_eq!(idx_email.columns, vec!["email".to_string()]);
+    assert!(idx_email.unique);
+
+    let libri = model.table("libri").expect("tabella 'libri' assente");
+
+    let libri_id = col(libri, "id");
+    assert!(libri_id.auto_increment, "'libri.id' doveva essere auto-increment (AUTOINCREMENT)");
+
+    let anno = col(libri, "anno");
+    assert_eq!(anno.default.as_deref(), Some("2000"));
+
+    // Indice non-UNIQUE su libri.titolo.
+    assert_eq!(libri.indexes.len(), 1, "indici inattesi: {:?}", libri.indexes);
+    let idx_titolo = &libri.indexes[0];
+    assert_eq!(idx_titolo.name, "idx_libri_titolo");
+    assert_eq!(idx_titolo.columns, vec!["titolo".to_string()]);
+    assert!(!idx_titolo.unique);
+
+    // Foreign key libri.autore_id -> autori.id.
+    assert_eq!(libri.foreign_keys.len(), 1, "foreign key inattese: {:?}", libri.foreign_keys);
+    let fk = &libri.foreign_keys[0];
+    assert_eq!(fk.columns, vec!["autore_id".to_string()]);
+    assert_eq!(fk.ref_table, "autori");
+    assert_eq!(fk.ref_columns, vec!["id".to_string()]);
+
+    // Chiave primaria composta: nessuna colonna è auto-increment.
+    let assoc = model.table("assoc").expect("tabella 'assoc' assente");
+    assert!(!col(assoc, "a").auto_increment, "PK composta: 'a' non deve essere auto-increment");
+    assert!(!col(assoc, "b").auto_increment, "PK composta: 'b' non deve essere auto-increment");
+    assert!(col(assoc, "a").primary_key);
+    assert!(col(assoc, "b").primary_key);
+}

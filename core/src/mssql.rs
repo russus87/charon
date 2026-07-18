@@ -7,7 +7,7 @@
 
 use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
-use crate::schema::{AbstractType, Column, SchemaModel, Table};
+use crate::schema::{AbstractType, Column, ForeignKey, Index, SchemaModel, Table};
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
 use std::process::Command;
@@ -465,10 +465,140 @@ mod rustimpl {
         Ok(rows.iter().map(|r| s(r, 0)).collect())
     }
 
+    /// Toglie le parentesi esterne "di troppo" da una `definition` di
+    /// `sys.default_constraints` (es. `((0))` → `0`, `(getdate())` → `getdate()`).
+    /// Best-effort: le toglie solo finché racchiudono l'intera espressione in modo
+    /// bilanciato (altrimenti la lasciamo com'è, per non rompere l'espressione).
+    fn strip_default_parens(raw: &str) -> String {
+        let mut v = raw.trim();
+        loop {
+            if v.len() < 2 || !v.starts_with('(') || !v.ends_with(')') {
+                break;
+            }
+            let inner = &v[1..v.len() - 1];
+            let mut depth = 0i32;
+            let mut balanced = true;
+            for ch in inner.chars() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth < 0 {
+                            balanced = false;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if balanced && depth == 0 {
+                v = inner.trim();
+            } else {
+                break;
+            }
+        }
+        v.to_string()
+    }
+
+    /// Legge, per ogni colonna di `schema.table`, il flag IDENTITY e il default
+    /// (se presente), da `sys.columns`/`sys.default_constraints`.
+    async fn column_extras(
+        client: &mut Conn,
+        schema: &str,
+        table: &str,
+    ) -> Result<std::collections::HashMap<String, (bool, Option<String>)>> {
+        let full = format!("[{schema}].[{table}]");
+        let rows = query(
+            client,
+            &format!(
+                "SELECT c.name, CAST(c.is_identity AS INT), dc.definition \
+                 FROM sys.columns c \
+                 LEFT JOIN sys.default_constraints dc \
+                   ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id \
+                 WHERE c.object_id = OBJECT_ID('{full}')"
+            ),
+        )
+        .await?;
+        let mut out = std::collections::HashMap::new();
+        for r in &rows {
+            let name = s(r, 0);
+            let is_identity = i(r, 1).unwrap_or(0) == 1;
+            let def = s(r, 2);
+            let default = if def.is_empty() { None } else { Some(strip_default_parens(&def)) };
+            out.insert(name, (is_identity, default));
+        }
+        Ok(out)
+    }
+
+    /// Legge gli indici **non-PK** di `schema.table`, raggruppati per nome.
+    async fn table_indexes(client: &mut Conn, schema: &str, table: &str) -> Result<Vec<Index>> {
+        let full = format!("[{schema}].[{table}]");
+        let rows = query(
+            client,
+            &format!(
+                "SELECT i.name AS idx, CAST(i.is_unique AS INT), c.name AS col \
+                 FROM sys.indexes i \
+                 JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
+                 JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
+                 WHERE i.object_id = OBJECT_ID('{full}') AND i.is_primary_key = 0 AND i.name IS NOT NULL \
+                 ORDER BY i.name, ic.key_ordinal"
+            ),
+        )
+        .await?;
+        let mut out: Vec<Index> = Vec::new();
+        for r in &rows {
+            let name = s(r, 0);
+            let unique = i(r, 1).unwrap_or(0) == 1;
+            let col = s(r, 2);
+            if matches!(out.last(), Some(idx) if idx.name == name) {
+                out.last_mut().unwrap().columns.push(col);
+            } else {
+                out.push(Index { name, columns: vec![col], unique });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Legge le foreign key di `schema.table`, raggruppate per nome di vincolo.
+    /// `ref_table` è già il nome semplice (via `OBJECT_NAME`), come vuole il
+    /// modello neutro.
+    async fn table_foreign_keys(client: &mut Conn, schema: &str, table: &str) -> Result<Vec<ForeignKey>> {
+        let full = format!("[{schema}].[{table}]");
+        let rows = query(
+            client,
+            &format!(
+                "SELECT fk.name, COL_NAME(fkc.parent_object_id, fkc.parent_column_id) AS col, \
+                 OBJECT_NAME(fk.referenced_object_id) AS ref_table, \
+                 COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) AS ref_col \
+                 FROM sys.foreign_keys fk \
+                 JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id \
+                 WHERE fk.parent_object_id = OBJECT_ID('{full}') \
+                 ORDER BY fk.name, fkc.constraint_column_id"
+            ),
+        )
+        .await?;
+        let mut out: Vec<ForeignKey> = Vec::new();
+        for r in &rows {
+            let name = s(r, 0);
+            let col = s(r, 1);
+            let ref_table = s(r, 2);
+            let ref_col = s(r, 3);
+            if matches!(out.last(), Some(fk) if fk.name == name) {
+                let fk = out.last_mut().unwrap();
+                fk.columns.push(col);
+                fk.ref_columns.push(ref_col);
+            } else {
+                out.push(ForeignKey { name, columns: vec![col], ref_table, ref_columns: vec![ref_col] });
+            }
+        }
+        Ok(out)
+    }
+
     /// Legge lo schema neutro dell'intero database: una [`Table`] per ogni
-    /// BASE TABLE, con le colonne mappate su [`AbstractType`] e le chiavi
-    /// primarie marcate. Il nome di tabella nel modello è quello semplice
-    /// (senza schema), per permettere il confronto cross-motore.
+    /// BASE TABLE, con le colonne mappate su [`AbstractType`], le chiavi
+    /// primarie marcate, IDENTITY/DEFAULT, indici (non-PK) e foreign key. Il
+    /// nome di tabella nel modello è quello semplice (senza schema), per
+    /// permettere il confronto cross-motore.
     pub async fn read_schema(conn: &Connection) -> Result<SchemaModel> {
         let mut client = connect(conn).await?;
         let tables = list_tables(&mut client).await?;
@@ -488,6 +618,7 @@ mod rustimpl {
             .await?;
 
             let pk = pk_columns(&mut client, schema, table).await?;
+            let extras = column_extras(&mut client, schema, table).await?;
 
             let mut columns = Vec::new();
             for r in &col_rows {
@@ -499,10 +630,18 @@ mod rustimpl {
                 let nullable = s(r, 5).eq_ignore_ascii_case("YES");
                 let ty = map_abstract_type(&data_type, char_len, prec, scale);
                 let primary_key = pk.iter().any(|k| k == &name);
-                columns.push(Column { name, ty, nullable, primary_key });
+                let (auto_increment, mut default) = extras.get(&name).cloned().unwrap_or((false, None));
+                if auto_increment {
+                    // L'IDENTITY genera già il valore: nessun default esplicito da riportare.
+                    default = None;
+                }
+                columns.push(Column { name, ty, nullable, primary_key, auto_increment, default });
             }
 
-            model_tables.push(Table { name: table.clone(), columns });
+            let indexes = table_indexes(&mut client, schema, table).await?;
+            let foreign_keys = table_foreign_keys(&mut client, schema, table).await?;
+
+            model_tables.push(Table { name: table.clone(), columns, indexes, foreign_keys });
         }
 
         Ok(SchemaModel { tables: model_tables })

@@ -9,7 +9,7 @@
 
 use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
-use crate::schema::{AbstractType, Column, SchemaModel, Table};
+use crate::schema::{AbstractType, Column, ForeignKey, Index, SchemaModel, Table};
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
 use std::process::Command;
@@ -588,8 +588,74 @@ mod rustimpl {
         }
     }
 
+    /// Indici non-PK di una tabella (`information_schema.statistics`), raggruppati
+    /// per nome indice, colonne nell'ordine `SEQ_IN_INDEX`.
+    fn table_indexes(client: &mut Conn, db: &str, table: &str) -> Result<Vec<Index>> {
+        let rows: Vec<(String, i64, String)> = client
+            .query(format!(
+                "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME FROM information_schema.statistics \
+                 WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}' AND INDEX_NAME <> 'PRIMARY' \
+                 ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+                esc(db),
+                esc(table)
+            ))
+            .map_err(|e| Error::Msg(e.to_string()))?;
+
+        // Ordine di prima apparizione + raggruppamento per nome indice.
+        let mut order: Vec<String> = Vec::new();
+        let mut grouped: HashMap<String, (bool, Vec<String>)> = HashMap::new();
+        for (idx_name, non_unique, col_name) in rows {
+            let entry = grouped.entry(idx_name.clone()).or_insert_with(|| {
+                order.push(idx_name.clone());
+                (non_unique == 0, Vec::new())
+            });
+            entry.1.push(col_name);
+        }
+        Ok(order
+            .into_iter()
+            .map(|name| {
+                let (unique, columns) = grouped.remove(&name).unwrap();
+                Index { name, columns, unique }
+            })
+            .collect())
+    }
+
+    /// Foreign key di una tabella (`information_schema.KEY_COLUMN_USAGE`),
+    /// raggruppate per nome vincolo, colonne nell'ordine `ORDINAL_POSITION`.
+    fn table_foreign_keys(client: &mut Conn, db: &str, table: &str) -> Result<Vec<ForeignKey>> {
+        let rows: Vec<(String, String, String, String)> = client
+            .query(format!(
+                "SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
+                 FROM information_schema.KEY_COLUMN_USAGE \
+                 WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}' AND REFERENCED_TABLE_NAME IS NOT NULL \
+                 ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION",
+                esc(db),
+                esc(table)
+            ))
+            .map_err(|e| Error::Msg(e.to_string()))?;
+
+        let mut order: Vec<String> = Vec::new();
+        let mut grouped: HashMap<String, (Vec<String>, String, Vec<String>)> = HashMap::new();
+        for (cname, col, ref_table, ref_col) in rows {
+            let entry = grouped.entry(cname.clone()).or_insert_with(|| {
+                order.push(cname.clone());
+                (Vec::new(), ref_table.clone(), Vec::new())
+            });
+            entry.0.push(col);
+            entry.2.push(ref_col);
+        }
+        Ok(order
+            .into_iter()
+            .map(|name| {
+                let (columns, ref_table, ref_columns) = grouped.remove(&name).unwrap();
+                ForeignKey { name, columns, ref_table, ref_columns }
+            })
+            .collect())
+    }
+
     /// Legge lo schema neutro dell'intero database: per ogni tabella, le
-    /// colonne (tipo astratto, nullabilità) e la chiave primaria, ricavate da
+    /// colonne (tipo astratto, nullabilità, auto-increment, default), la
+    /// chiave primaria, gli indici non-PK e le foreign key, ricavate da
     /// `information_schema`.
     pub fn read_schema(conn: &Connection) -> Result<SchemaModel> {
         let mut client = connect(conn)?;
@@ -607,10 +673,13 @@ mod rustimpl {
                 Option<i64>,
                 Option<i64>,
                 String,
+                String,
+                Option<String>,
             )> = client
                 .query(format!(
                     "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, CHARACTER_MAXIMUM_LENGTH, \
-                     NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE FROM information_schema.columns \
+                     NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE, EXTRA, COLUMN_DEFAULT \
+                     FROM information_schema.columns \
                      WHERE table_schema = '{}' AND table_name = '{}' ORDER BY ORDINAL_POSITION",
                     esc(&conn.database),
                     esc(tname)
@@ -618,15 +687,36 @@ mod rustimpl {
                 .map_err(|e| Error::Msg(e.to_string()))?;
 
             let mut columns = Vec::with_capacity(rows.len());
-            for (name, data_type, column_type, char_max_len, num_precision, num_scale, is_nullable) in
-                rows
+            for (
+                name,
+                data_type,
+                column_type,
+                char_max_len,
+                num_precision,
+                num_scale,
+                is_nullable,
+                extra,
+                column_default,
+            ) in rows
             {
                 let ty = map_type(&data_type, &column_type, char_max_len, num_precision, num_scale);
                 let primary_key = pk.iter().any(|k| k == &name);
-                columns.push(Column { name, ty, nullable: is_nullable == "YES", primary_key });
+                let auto_increment = extra.to_lowercase().contains("auto_increment");
+                let default = if auto_increment { None } else { column_default };
+                columns.push(Column {
+                    name,
+                    ty,
+                    nullable: is_nullable == "YES",
+                    primary_key,
+                    auto_increment,
+                    default,
+                });
             }
 
-            tables.push(Table { name: tname.clone(), columns });
+            let indexes = table_indexes(&mut client, &conn.database, tname)?;
+            let foreign_keys = table_foreign_keys(&mut client, &conn.database, tname)?;
+
+            tables.push(Table { name: tname.clone(), columns, indexes, foreign_keys });
         }
 
         Ok(SchemaModel { tables })

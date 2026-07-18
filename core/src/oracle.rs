@@ -10,7 +10,7 @@
 
 use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
-use crate::schema::{AbstractType, Column, SchemaModel, Table};
+use crate::schema::{AbstractType, Column, ForeignKey, Index, SchemaModel, Table};
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
 use std::path::Path;
@@ -1319,9 +1319,133 @@ mod rustimpl {
         }
     }
 
+    /// Auto-increment (IDENTITY, Oracle 12c+) e default grezzo delle colonne di
+    /// una tabella, in una query separata da `columns()`: `IDENTITY_COLUMN` non
+    /// esiste nelle versioni pre-12c e `DATA_DEFAULT` è di tipo LONG (scomodo/
+    /// fragile da leggere). Se la query fallisce (versione vecchia o problemi nel
+    /// leggere il LONG) ripieghiamo su "nessuna colonna auto-increment, nessun
+    /// default" invece di far fallire tutta la lettura dello schema.
+    fn column_extras(
+        c: &oracle::Connection,
+        table: &str,
+    ) -> std::collections::HashMap<String, (bool, Option<String>)> {
+        let sql = format!(
+            "SELECT column_name, identity_column, data_default FROM user_tab_columns \
+             WHERE table_name = '{table}' ORDER BY column_id"
+        );
+        let mut out = std::collections::HashMap::new();
+        let rows = match c.query(&sql, &[]) {
+            Ok(r) => r,
+            Err(_) => return out, // es. IDENTITY_COLUMN assente: nessun extra, tutto a default
+        };
+        for row in rows {
+            let Ok(row) = row else { continue };
+            let Ok(name) = row.get::<usize, String>(0) else { continue };
+            let auto_increment = row
+                .get::<usize, Option<String>>(1)
+                .ok()
+                .flatten()
+                .map(|v| v.trim().eq_ignore_ascii_case("YES"))
+                .unwrap_or(false);
+            // Se la colonna è auto-increment il default (di solito la sequenza
+            // implicita dell'IDENTITY) non è significativo per il modello neutro.
+            let default = if auto_increment {
+                None
+            } else {
+                row.get::<usize, Option<String>>(2)
+                    .ok()
+                    .flatten()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            };
+            out.insert(name, (auto_increment, default));
+        }
+        out
+    }
+
+    /// Indici non-PK/non-UNIQUE-constraint di una tabella (quelli generati per i
+    /// vincoli PK/UNIQUE sono già rappresentati da `primary_key`/vincoli, non
+    /// vanno duplicati qui). Raggruppati per nome indice, colonne in ordine.
+    fn indexes(c: &oracle::Connection, table: &str) -> Result<Vec<Index>> {
+        let rows = c
+            .query(
+                "SELECT i.index_name, i.uniqueness, c.column_name \
+                 FROM user_indexes i JOIN user_ind_columns c ON c.index_name = i.index_name \
+                 WHERE i.table_name = :1 \
+                   AND i.index_name NOT IN (SELECT index_name FROM user_constraints \
+                     WHERE constraint_type IN ('P','U') AND index_name IS NOT NULL) \
+                 ORDER BY i.index_name, c.column_position",
+                &[&table],
+            )
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let mut order: Vec<String> = Vec::new();
+        let mut map: std::collections::HashMap<String, (bool, Vec<String>)> = std::collections::HashMap::new();
+        for r in rows {
+            let r = r.map_err(|e| Error::Msg(e.to_string()))?;
+            let name = r.get::<usize, String>(0).map_err(|e| Error::Msg(e.to_string()))?;
+            let uniqueness = r.get::<usize, String>(1).map_err(|e| Error::Msg(e.to_string()))?;
+            let col = r.get::<usize, String>(2).map_err(|e| Error::Msg(e.to_string()))?;
+            if !map.contains_key(&name) {
+                order.push(name.clone());
+            }
+            let entry = map.entry(name).or_insert_with(|| (uniqueness == "UNIQUE", Vec::new()));
+            entry.1.push(col);
+        }
+        Ok(order
+            .into_iter()
+            .map(|name| {
+                let (unique, columns) = map.remove(&name).unwrap();
+                Index { name, columns, unique }
+            })
+            .collect())
+    }
+
+    /// Foreign key di una tabella, raggruppate per nome vincolo, con le colonne
+    /// locali/riferite in ordine di posizione.
+    fn foreign_keys(c: &oracle::Connection, table: &str) -> Result<Vec<ForeignKey>> {
+        let rows = c
+            .query(
+                "SELECT c.constraint_name, cc.column_name, rc.table_name AS ref_table, \
+                        rcc.column_name AS ref_col \
+                 FROM user_constraints c \
+                 JOIN user_cons_columns cc ON cc.constraint_name = c.constraint_name \
+                 JOIN user_constraints rc ON rc.constraint_name = c.r_constraint_name \
+                 JOIN user_cons_columns rcc ON rcc.constraint_name = rc.constraint_name \
+                   AND rcc.position = cc.position \
+                 WHERE c.constraint_type = 'R' AND c.table_name = :1 \
+                 ORDER BY c.constraint_name, cc.position",
+                &[&table],
+            )
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let mut order: Vec<String> = Vec::new();
+        let mut map: std::collections::HashMap<String, (String, Vec<String>, Vec<String>)> =
+            std::collections::HashMap::new();
+        for r in rows {
+            let r = r.map_err(|e| Error::Msg(e.to_string()))?;
+            let name = r.get::<usize, String>(0).map_err(|e| Error::Msg(e.to_string()))?;
+            let col = r.get::<usize, String>(1).map_err(|e| Error::Msg(e.to_string()))?;
+            let ref_table = r.get::<usize, String>(2).map_err(|e| Error::Msg(e.to_string()))?;
+            let ref_col = r.get::<usize, String>(3).map_err(|e| Error::Msg(e.to_string()))?;
+            if !map.contains_key(&name) {
+                order.push(name.clone());
+            }
+            let entry = map.entry(name).or_insert_with(|| (ref_table, Vec::new(), Vec::new()));
+            entry.1.push(col);
+            entry.2.push(ref_col);
+        }
+        Ok(order
+            .into_iter()
+            .map(|name| {
+                let (ref_table, columns, ref_columns) = map.remove(&name).unwrap();
+                ForeignKey { name, columns, ref_table, ref_columns }
+            })
+            .collect())
+    }
+
     /// Legge lo schema neutro dell'intero database: tutte le tabelle
-    /// dell'utente, con colonne mappate su [`AbstractType`] e chiavi primarie
-    /// (riusa le stesse query di `columns`/`primary_key_cols` usate dal diff).
+    /// dell'utente, con colonne mappate su [`AbstractType`], chiavi primarie,
+    /// auto-increment/default, indici non-PK e foreign key (riusa le stesse
+    /// query di `columns`/`primary_key_cols` usate dal diff).
     pub fn read_schema(conn: &Connection) -> Result<SchemaModel> {
         let c = connect(conn)?;
         let table_names = list_tables(&c)?;
@@ -1329,15 +1453,27 @@ mod rustimpl {
         for name in table_names {
             let cols = columns(&c, &name)?;
             let pk = primary_key_cols(&c, &name)?;
+            let extras = column_extras(&c, &name);
             let columns_neutre = cols
                 .into_iter()
                 .map(|col| {
                     let ty = abstract_type(&col.dtype, col.len, col.prec, col.scale);
                     let primary_key = pk.iter().any(|p| *p == col.name);
-                    Column { name: col.name, ty, nullable: !col.not_null, primary_key }
+                    let (auto_increment, default) =
+                        extras.get(&col.name).cloned().unwrap_or((false, None));
+                    Column {
+                        name: col.name,
+                        ty,
+                        nullable: !col.not_null,
+                        primary_key,
+                        auto_increment,
+                        default,
+                    }
                 })
                 .collect();
-            tables.push(Table { name, columns: columns_neutre });
+            let idx = indexes(&c, &name)?;
+            let fks = foreign_keys(&c, &name)?;
+            tables.push(Table { name, columns: columns_neutre, indexes: idx, foreign_keys: fks });
         }
         Ok(SchemaModel { tables })
     }

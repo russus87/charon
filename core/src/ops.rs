@@ -280,13 +280,15 @@ pub fn clone(
         Ok(x) => x,
         Err(e) => return early_error(e),
     };
-    // Motori diversi → migrazione cross-motore (best-effort, puro Rust). Le
-    // opzioni data-only/masking non sono supportate in questo percorso.
+    // Motori diversi → migrazione cross-motore (best-effort, puro Rust).
     if src.engine != dst.engine {
-        if opts.data_only || opts.has_mask() {
+        if opts.has_mask() {
             return early_error(Error::Unsupported(
-                "data-only e mascheramento non sono disponibili nel clone cross-motore".into(),
+                "il mascheramento non è disponibile nel clone cross-motore".into(),
             ));
+        }
+        if opts.data_only {
+            return cross_data_only(&src, &dst, dry);
         }
         return cross_clone(&src, &dst, dry);
     }
@@ -531,11 +533,31 @@ pub fn cross_clone(src: &Connection, dst: &Connection, dry: bool) -> OpResult {
                 }
             }
         }
+        // Indici della tabella, dopo i dati.
+        for idx in &t.indexes {
+            script.push_str(&crate::schema::index_ddl(&t.name, idx, dst.engine));
+            script.push('\n');
+        }
         script.push('\n');
+    }
+    // Foreign key in coda: tutte le tabelle esistono e sono popolate, quindi la
+    // validazione referenziale non fallisce per ordine di creazione.
+    let mut nfk = 0usize;
+    for t in &model.tables {
+        for fk in &t.foreign_keys {
+            script.push_str(&crate::schema::fk_ddl(&t.name, fk, dst.engine));
+            script.push('\n');
+            nfk += 1;
+        }
     }
     crate::progress::note(
         &mut log,
-        format!("{} tabelle, {} righe da migrare", model.tables.len(), nrows),
+        format!(
+            "{} tabelle, {} righe, {} FK da migrare",
+            model.tables.len(),
+            nrows,
+            nfk
+        ),
     );
 
     if dry {
@@ -556,6 +578,122 @@ pub fn cross_clone(src: &Connection, dst: &Connection, dry: bool) -> OpResult {
     OpResult {
         message: if res.ok {
             format!("Migrazione cross-motore completata ({nrows} righe)")
+        } else {
+            res.message
+        },
+        log: full,
+        ..res
+    }
+}
+
+/// **Data-only cross-motore** (append): non tocca lo schema della destinazione
+/// (che si assume già esistente, es. gestito da migration). Per ogni tabella
+/// presente da entrambe le parti, trasferisce i dati delle sole colonne comuni
+/// (per nome), convertendo i valori per il target. Non svuota la destinazione.
+pub fn cross_data_only(src: &Connection, dst: &Connection, dry: bool) -> OpResult {
+    let mut log = Vec::new();
+    note_dry(dry, &mut log);
+    crate::progress::note(
+        &mut log,
+        format!(
+            "Solo-dati cross-motore {} → {} (append, colonne comuni)",
+            src.engine.label(),
+            dst.engine.label()
+        ),
+    );
+    let smodel = match read_schema(src) {
+        Ok(m) => m,
+        Err(e) => return early_error(e),
+    };
+    let dmodel = match read_schema(dst) {
+        Ok(m) => m,
+        Err(e) => return early_error(e),
+    };
+    let tmpdir = std::env::temp_dir().join(format!("charon-xdata-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmpdir);
+    let files = match export_data(src, &tmpdir.display().to_string(), "json") {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmpdir);
+            return early_error(e);
+        }
+    };
+    let file_of: std::collections::HashMap<String, String> = files
+        .iter()
+        .filter_map(|f| {
+            std::path::Path::new(f)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|stem| (stem.to_string(), f.clone()))
+        })
+        .collect();
+
+    let mut script = String::new();
+    let mut nrows = 0usize;
+    let mut skipped = 0usize;
+    for st in &smodel.tables {
+        let Some(dt) = dmodel.table(&st.name) else {
+            skipped += 1;
+            continue; // tabella assente nella destinazione
+        };
+        // Colonne del target che esistono anche nella sorgente (abbinamento per nome).
+        let cols: Vec<&crate::schema::Column> = dt
+            .columns
+            .iter()
+            .filter(|c| st.columns.iter().any(|sc| sc.name == c.name))
+            .collect();
+        if cols.is_empty() {
+            continue;
+        }
+        let collist = cols
+            .iter()
+            .map(|c| crate::schema::quote_ident(dst.engine, &c.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let tname = crate::schema::quote_ident(dst.engine, &st.name);
+        if let Some(path) = file_of.get(&st.name) {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if let Ok(serde_json::Value::Array(rows)) =
+                    serde_json::from_str::<serde_json::Value>(&text)
+                {
+                    for row in &rows {
+                        let vals = cols
+                            .iter()
+                            .map(|c| {
+                                let v = row
+                                    .get(&c.name)
+                                    .and_then(|x| if x.is_null() { None } else { x.as_str() });
+                                cross_literal(v, &c.ty, dst.engine)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        script.push_str(&format!("INSERT INTO {tname} ({collist}) VALUES ({vals});\n"));
+                        nrows += 1;
+                    }
+                }
+            }
+        }
+    }
+    crate::progress::note(
+        &mut log,
+        format!("{nrows} righe da inserire; {skipped} tabelle saltate (assenti nel target)"),
+    );
+    if dry {
+        let _ = std::fs::remove_dir_all(&tmpdir);
+        return OpResult::ok(Method::Rust, "Dry-run solo-dati cross-motore", log);
+    }
+    let tmp = tmpdir.join("data.sql");
+    if let Err(e) = std::fs::write(&tmp, &script) {
+        let _ = std::fs::remove_dir_all(&tmpdir);
+        return early_error(Error::Io(e));
+    }
+    let mut res = import(dst, &tmp.display().to_string(), Prefer::Rust, false);
+    let _ = std::fs::remove_dir_all(&tmpdir);
+    let mut full = log;
+    full.append(&mut res.log);
+    OpResult {
+        message: if res.ok {
+            format!("Solo-dati cross-motore completato ({nrows} righe)")
         } else {
             res.message
         },

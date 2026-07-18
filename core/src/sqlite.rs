@@ -13,7 +13,7 @@
 
 use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
-use crate::schema::{AbstractType, Column, SchemaModel, Table};
+use crate::schema::{AbstractType, Column, ForeignKey, Index, SchemaModel, Table};
 use crate::tools::{find_tool, has_tool};
 use crate::{Error, Result};
 use std::process::Command;
@@ -507,7 +507,95 @@ mod rustimpl {
         }
     }
 
-    /// Legge lo schema neutro: tabelle utenti e colonne via `PRAGMA table_info`.
+    /// Indici non-PK di una tabella via `PRAGMA index_list` + `PRAGMA index_info`.
+    /// L'indice implicito generato da SQLite per la chiave primaria (`origin =
+    /// 'pk'`) viene scartato: è già rappresentato da `Column::primary_key`.
+    fn read_indexes(c: &Sql, table: &str) -> Result<Vec<Index>> {
+        let mut st = c
+            .prepare(&format!("PRAGMA index_list(\"{table}\")"))
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let rows = st
+            .query_map([], |r| {
+                let name: String = r.get(1)?;
+                let unique: i64 = r.get(2)?;
+                let origin: String = r.get(3)?;
+                Ok((name, unique, origin))
+            })
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let mut idx_rows = Vec::new();
+        for r in rows {
+            idx_rows.push(r.map_err(|e| Error::Msg(e.to_string()))?);
+        }
+
+        let mut indexes = Vec::new();
+        for (name, unique, origin) in idx_rows {
+            if origin == "pk" {
+                continue;
+            }
+            let mut st2 = c
+                .prepare(&format!("PRAGMA index_info(\"{name}\")"))
+                .map_err(|e| Error::Msg(e.to_string()))?;
+            let cols = st2
+                .query_map([], |r| r.get::<_, String>(2))
+                .map_err(|e| Error::Msg(e.to_string()))?;
+            let mut columns = Vec::new();
+            for cr in cols {
+                columns.push(cr.map_err(|e| Error::Msg(e.to_string()))?);
+            }
+            indexes.push(Index { name, columns, unique: unique == 1 });
+        }
+        Ok(indexes)
+    }
+
+    /// Foreign key di una tabella via `PRAGMA foreign_key_list`: le righe con lo
+    /// stesso `id` compongono una chiave composta, ordinate per `seq`.
+    fn read_foreign_keys(c: &Sql, table: &str) -> Result<Vec<ForeignKey>> {
+        let mut st = c
+            .prepare(&format!("PRAGMA foreign_key_list(\"{table}\")"))
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let rows = st
+            .query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                let seq: i64 = r.get(1)?;
+                let ref_table: String = r.get(2)?;
+                let from: String = r.get(3)?;
+                let to: String = r.get(4)?;
+                Ok((id, seq, ref_table, from, to))
+            })
+            .map_err(|e| Error::Msg(e.to_string()))?;
+
+        let mut raw = Vec::new();
+        for r in rows {
+            raw.push(r.map_err(|e| Error::Msg(e.to_string()))?);
+        }
+        // Ordina per id e poi per seq: raggruppa le chiavi composte mantenendo
+        // l'ordine originale delle colonne.
+        raw.sort_by_key(|(id, seq, ..)| (*id, *seq));
+
+        let mut groups: Vec<(i64, String, Vec<String>, Vec<String>)> = Vec::new();
+        for (id, _seq, ref_table, from, to) in raw {
+            if let Some(g) = groups.iter_mut().find(|(gid, ..)| *gid == id) {
+                g.2.push(from);
+                g.3.push(to);
+            } else {
+                groups.push((id, ref_table, vec![from], vec![to]));
+            }
+        }
+
+        Ok(groups
+            .into_iter()
+            .map(|(id, ref_table, columns, ref_columns)| ForeignKey {
+                name: format!("fk_{table}_{id}"),
+                columns,
+                ref_table,
+                ref_columns,
+            })
+            .collect())
+    }
+
+    /// Legge lo schema neutro: tabelle utenti, colonne (con default/auto-increment),
+    /// indici non-PK e foreign key, via `PRAGMA table_info`/`index_list`/`index_info`/
+    /// `foreign_key_list`.
     pub fn read_schema(conn: &Connection) -> Result<SchemaModel> {
         let c = open_ro(db_path(conn))?;
         let mut tables = Vec::new();
@@ -520,21 +608,38 @@ mod rustimpl {
                     let cname: String = r.get(1)?;
                     let ctype: String = r.get(2)?;
                     let notnull: i64 = r.get(3)?;
+                    let dflt: Option<String> = r.get(4)?;
                     let pk: i64 = r.get(5)?;
-                    Ok((cname, ctype, notnull, pk))
+                    Ok((cname, ctype, notnull, dflt, pk))
                 })
                 .map_err(|e| Error::Msg(e.to_string()))?;
-            let mut columns = Vec::new();
+            let mut raw_columns = Vec::new();
             for r in rows {
-                let (cname, ctype, notnull, pk) = r.map_err(|e| Error::Msg(e.to_string()))?;
+                raw_columns.push(r.map_err(|e| Error::Msg(e.to_string()))?);
+            }
+            // Numero di colonne che compongono la PK: serve a distinguere una
+            // singola colonna INTEGER PRIMARY KEY (alias di rowid, auto-increment)
+            // da una PK composta o non intera.
+            let pk_count = raw_columns.iter().filter(|(_, _, _, _, pk)| *pk > 0).count();
+
+            let mut columns = Vec::new();
+            for (cname, ctype, notnull, dflt, pk) in raw_columns {
+                let upper = ctype.to_uppercase();
+                let auto_increment = pk == 1 && pk_count == 1 && upper.contains("INT");
                 columns.push(Column {
                     name: cname,
                     ty: map_type(&ctype),
                     nullable: notnull == 0,
                     primary_key: pk > 0,
+                    auto_increment,
+                    default: dflt,
                 });
             }
-            tables.push(Table { name, columns });
+
+            let indexes = read_indexes(&c, &name)?;
+            let foreign_keys = read_foreign_keys(&c, &name)?;
+
+            tables.push(Table { name, columns, indexes, foreign_keys });
         }
         Ok(SchemaModel { tables })
     }

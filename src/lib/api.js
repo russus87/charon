@@ -34,6 +34,9 @@ export const compareTableData = (source, target, table) =>
 export const previewTable = (conn, table, limit) =>
   invoke("preview_table", { conn, table, limit });
 
+// Schema (elenco tabelle + colonne) di una connessione, per il browser dati.
+export const browseSchema = (conn) => invoke("browse_schema", { conn });
+
 // Esporta i dati di tutte le tabelle in una cartella (CSV o JSON).
 export const exportData = (conn, outDir, format) =>
   invoke("export_data", { conn, outDir, format });

@@ -53,7 +53,7 @@ export const app = $state({
   connections: [], // ConnectionProfile[] salvate ({id, name, connection})
   editing: null, // profilo in modifica nella vista Connessioni (o null)
   // Connessione selezionata per ciascuna operazione (id del profilo).
-  sel: { dump: null, import: null, cloneSrc: null, cloneDst: null, cmpSrc: null, cmpDst: null },
+  sel: { dump: null, import: null, cloneSrc: null, cloneDst: null, cmpSrc: null, cmpDst: null, browse: null },
   theme: "auto", // 'auto' | 'light' | 'dark' (vedi initTheme/cycleTheme)
   diff: null, // ultimo DbDiff del confronto (o null)
   diffErr: null, // errore del confronto, se fallito
@@ -127,7 +127,7 @@ export async function loadConnections() {
   }
   const first = app.connections[0]?.id ?? null;
   const valid = (id) => (app.connections.some((c) => c.id === id) ? id : first);
-  for (const k of ["dump", "import", "cloneSrc", "cloneDst", "cmpSrc", "cmpDst"]) {
+  for (const k of ["dump", "import", "cloneSrc", "cloneDst", "cmpSrc", "cmpDst", "browse"]) {
     app.sel[k] = valid(app.sel[k]);
   }
 }

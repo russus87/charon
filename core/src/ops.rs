@@ -807,6 +807,13 @@ pub fn export_data(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec
     }
 }
 
+/// Schema neutro di una connessione (elenco tabelle + colonne). Sola lettura;
+/// usato dal browser "Sbircia".
+pub fn schema(conn: &Connection) -> Result<crate::schema::SchemaModel> {
+    let (conn, _guard) = prepare(conn)?;
+    read_schema(&conn)
+}
+
 /// Anteprima **read-only** delle prime `limit` righe di una tabella. Non modifica
 /// nulla; serve a sbirciare i dati durante confronto/migrazione.
 pub fn preview_table(conn: &Connection, table: &str, limit: u32) -> Result<TablePreview> {

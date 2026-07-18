@@ -14,6 +14,7 @@
   import Import from "./components/Import.svelte";
   import Clone from "./components/Clone.svelte";
   import Compare from "./components/Compare.svelte";
+  import Sbircia from "./components/Sbircia.svelte";
   import Tools from "./components/Tools.svelte";
   import ResultModal from "./components/ResultModal.svelte";
   import ConfirmModal from "./components/ConfirmModal.svelte";
@@ -48,6 +49,7 @@
     import: { comp: Import, title: "Importa", sub: "Carica un dump dentro un database." },
     clone: { comp: Clone, title: "Clona", sub: "Copia schema e dati da una sorgente a una destinazione." },
     compare: { comp: Compare, title: "Compare", sub: "Confronta due database e vedi cosa differisce, in stile diff." },
+    sbircia: { comp: Sbircia, title: "Sbircia", sub: "Sfoglia tabelle e dati di una connessione, in sola lettura." },
     tools: { comp: Tools, title: "Strumenti", sub: "Cosa è disponibile sulla macchina e come si connette Database Studio." },
   };
 
@@ -57,10 +59,10 @@
   // Tasti 1–6 per le viste, "?" per la legenda. Disattivi quando si scrive in un
   // campo o quando è aperto un popup/editor, per non rubare i tasti.
   let showShortcuts = $state(false);
-  const NAV_KEYS = { 1: "connection", 2: "dump", 3: "import", 4: "clone", 5: "compare", 6: "tools" };
+  const NAV_KEYS = { 1: "connection", 2: "dump", 3: "import", 4: "clone", 5: "compare", 6: "sbircia", 7: "tools" };
   const NAV_HELP = [
-    ["1", "Connessioni"], ["2", "Dump"], ["3", "Importa"],
-    ["4", "Clona"], ["5", "Compare"], ["6", "Strumenti"], ["?", "Questa legenda"],
+    ["1", "Connessioni"], ["2", "Dump"], ["3", "Importa"], ["4", "Clona"],
+    ["5", "Compare"], ["6", "Sbircia"], ["7", "Strumenti"], ["?", "Questa legenda"],
   ];
 
   function onKeydown(e) {

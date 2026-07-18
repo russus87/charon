@@ -9,6 +9,7 @@ use charon_core::connections::{self, ConnectionProfile};
 use charon_core::model::{
     CloneOptions, Connection, EngineReport, Method, OpResult, Prefer, TablePreview,
 };
+use charon_core::schema::SchemaModel;
 use charon_core::ops;
 use tauri::{AppHandle, Emitter};
 
@@ -156,6 +157,15 @@ async fn export_data(
     run_blocking_res(app, move || ops::export_data(&conn, &out_dir, &format)).await
 }
 
+/// Schema (elenco tabelle + colonne) di una connessione, per il browser dati.
+#[tauri::command]
+async fn browse_schema(
+    app: AppHandle,
+    conn: Connection,
+) -> std::result::Result<SchemaModel, String> {
+    run_blocking_res(app, move || ops::schema(&conn)).await
+}
+
 /// Anteprima read-only delle prime `limit` righe di una tabella.
 #[tauri::command]
 async fn preview_table(
@@ -259,6 +269,7 @@ pub fn run() {
             compare_databases,
             compare_table_data,
             preview_table,
+            browse_schema,
             export_data,
             export_diff,
             sync_plan,

@@ -13,7 +13,7 @@ import {
 } from "./api.js";
 
 // Porte di default per motore. SQLite è un file: nessuna porta (0).
-export const PORTS = { postgres: 5432, oracle: 1521, sqlserver: 1433, sqlite: 0 };
+export const PORTS = { postgres: 5432, mysql: 3306, oracle: 1521, sqlserver: 1433, sqlite: 0 };
 
 // Motori che sono un file locale invece di un server: per questi il campo
 // `database` contiene il percorso del file e host/utente/password non servono.
@@ -75,6 +75,7 @@ export const app = $state({
 
 const ENGINE_LABELS = {
   postgres: "PostgreSQL",
+  mysql: "MySQL",
   oracle: "Oracle",
   sqlserver: "SQL Server",
   sqlite: "SQLite",

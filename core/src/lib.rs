@@ -20,6 +20,7 @@ pub mod compare;
 pub mod connections;
 pub mod model;
 pub mod mssql;
+pub mod mysql;
 pub mod ops;
 pub mod oracle;
 pub mod postgres;

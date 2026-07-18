@@ -2,7 +2,7 @@
 //! verso il motore giusto. E' l'unico punto che la UI deve conoscere.
 
 use crate::model::*;
-use crate::{mssql, oracle, postgres, sqlite, tunnel, Error, Result};
+use crate::{mssql, mysql, oracle, postgres, sqlite, tunnel, Error, Result};
 
 /// Riepilogo di cosa e' disponibile sulla macchina, per tutti i motori.
 pub fn detect_all() -> Vec<EngineReport> {
@@ -11,6 +11,7 @@ pub fn detect_all() -> Vec<EngineReport> {
         oracle::report(),
         mssql::report(),
         sqlite::report(),
+        mysql::report(),
     ]
 }
 
@@ -21,6 +22,7 @@ fn availability(engine: Engine) -> (bool, bool) {
         Engine::Sqlserver => (mssql::native_available(), mssql::rust_available()),
         Engine::Oracle => (oracle::native_available(), oracle::rust_available()),
         Engine::Sqlite => (sqlite::native_available(), sqlite::rust_available()),
+        Engine::Mysql => (mysql::native_available(), mysql::rust_available()),
     }
 }
 
@@ -109,6 +111,8 @@ fn dispatch_dump(
         (Engine::Oracle, Method::Rust) => oracle::rust_dump(conn, out, dry, log),
         (Engine::Sqlite, Method::Native) => sqlite::native_dump(conn, out, dry, log),
         (Engine::Sqlite, Method::Rust) => sqlite::rust_dump(conn, out, dry, log),
+        (Engine::Mysql, Method::Native) => mysql::native_dump(conn, out, dry, log),
+        (Engine::Mysql, Method::Rust) => mysql::rust_dump(conn, out, dry, log),
     }
 }
 
@@ -128,6 +132,8 @@ fn dispatch_import(
         (Engine::Oracle, Method::Rust) => oracle::rust_import(conn, input, dry, log),
         (Engine::Sqlite, Method::Native) => sqlite::native_import(conn, input, dry, log),
         (Engine::Sqlite, Method::Rust) => sqlite::rust_import(conn, input, dry, log),
+        (Engine::Mysql, Method::Native) => mysql::native_import(conn, input, dry, log),
+        (Engine::Mysql, Method::Rust) => mysql::rust_import(conn, input, dry, log),
     }
 }
 
@@ -148,6 +154,8 @@ fn dispatch_clone(
         (Engine::Oracle, Method::Rust) => oracle::rust_clone(src, dst, opts, dry, log),
         (Engine::Sqlite, Method::Native) => sqlite::native_clone(src, dst, opts, dry, log),
         (Engine::Sqlite, Method::Rust) => sqlite::rust_clone(src, dst, opts, dry, log),
+        (Engine::Mysql, Method::Native) => mysql::native_clone(src, dst, opts, dry, log),
+        (Engine::Mysql, Method::Rust) => mysql::rust_clone(src, dst, opts, dry, log),
     }
 }
 
@@ -161,6 +169,8 @@ fn dispatch_test(conn: &Connection, m: Method, log: &mut Vec<String>) -> Result<
         (Engine::Oracle, Method::Rust) => oracle::rust_test(conn, log),
         (Engine::Sqlite, Method::Native) => sqlite::native_test(conn, log),
         (Engine::Sqlite, Method::Rust) => sqlite::rust_test(conn, log),
+        (Engine::Mysql, Method::Native) => mysql::native_test(conn, log),
+        (Engine::Mysql, Method::Rust) => mysql::rust_test(conn, log),
     }
 }
 
@@ -386,8 +396,9 @@ pub fn oracle_setup(path: &str) -> OpResult {
 /// Confronta due database dello stesso motore e restituisce il diff (schema +
 /// conteggio righe). **Sola lettura**: non modifica nessuno dei due lati.
 ///
-/// Implementato per tutti i motori (PostgreSQL, Oracle, SQL Server, SQLite) via
-/// il fallback puro Rust: legge i cataloghi, i tool nativi non c'entrano.
+/// Implementato per tutti i motori (PostgreSQL, Oracle, SQL Server, SQLite,
+/// MySQL/MariaDB) via il fallback puro Rust: legge i cataloghi, i tool nativi
+/// non c'entrano.
 pub fn compare(src: &Connection, dst: &Connection) -> Result<crate::compare::DbDiff> {
     if src.engine != dst.engine {
         return Err(Error::Unsupported(
@@ -401,6 +412,7 @@ pub fn compare(src: &Connection, dst: &Connection) -> Result<crate::compare::DbD
         Engine::Oracle => oracle::rust_compare(&src, &dst),
         Engine::Sqlserver => mssql::rust_compare(&src, &dst),
         Engine::Sqlite => sqlite::rust_compare(&src, &dst),
+        Engine::Mysql => mysql::rust_compare(&src, &dst),
     }
 }
 

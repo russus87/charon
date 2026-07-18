@@ -7,6 +7,7 @@
 
   const engines = [
     { id: "postgres", label: "PostgreSQL" },
+    { id: "mysql", label: "MySQL" },
     { id: "oracle", label: "Oracle" },
     { id: "sqlserver", label: "SQL Server" },
     { id: "sqlite", label: "SQLite" },

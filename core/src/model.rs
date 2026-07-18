@@ -13,6 +13,8 @@ pub enum Engine {
     /// `Connection::database` contiene il **percorso del file .db**, e
     /// host/porta/utente/password non si applicano.
     Sqlite,
+    /// MySQL/MariaDB: stesso protocollo di rete, stesso client (mysqldump/mysql).
+    Mysql,
 }
 
 impl Engine {
@@ -28,6 +30,7 @@ impl Engine {
             Engine::Sqlserver => 1433,
             Engine::Oracle => 1521,
             Engine::Sqlite => 0,
+            Engine::Mysql => 3306,
         }
     }
 
@@ -38,6 +41,7 @@ impl Engine {
             Engine::Oracle => "Oracle",
             Engine::Sqlserver => "SQL Server",
             Engine::Sqlite => "SQLite",
+            Engine::Mysql => "MySQL",
         }
     }
 }

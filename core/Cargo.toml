@@ -11,9 +11,13 @@ edition = "2021"
 # Fallback puro Rust (Postgres/SQL Server/Oracle) e tunnel SSH: attivi di default.
 # Oracle incluso: compilarlo non richiede l'Instant Client (serve solo a runtime),
 # quindi anche la build di sviluppo mostra Oracle fra i motori disponibili.
-default = ["pg-driver", "mssql-driver", "ssh-tunnel", "oracle-driver", "sqlite-driver"]
+default = ["pg-driver", "mssql-driver", "ssh-tunnel", "oracle-driver", "sqlite-driver", "mysql-driver"]
 pg-driver = ["dep:tokio-postgres"]
 mssql-driver = ["dep:tiberius", "dep:tokio-util", "dep:futures-util"]
+# Fallback puro Rust per MySQL/MariaDB (crate `mysql`, sincrono come rusqlite).
+# Niente TLS ne' zlib di sistema: solo backend puro Rust (minimal-rust), cosi'
+# non serve openssl ne' un compilatore C per la compressione.
+mysql-driver = ["dep:mysql"]
 # Tunnel SSH puro Rust (nessun binario ssh esterno richiesto).
 ssh-tunnel = ["dep:russh"]
 # Il driver Oracle (crate `oracle`/ODPI-C). COMPILARLO non richiede l'Instant
@@ -51,6 +55,11 @@ zip = { version = "2", optional = true, default-features = false, features = ["d
 # --- Tunnel SSH puro Rust ---
 russh = { version = "0.54", optional = true }
 rusqlite = { version = "0.40.1", features = ["bundled"], optional = true }
+
+# --- Fallback puro Rust: MySQL/MariaDB (client sincrono, come rusqlite) ---
+# default-features=false + minimal-rust: niente TLS e compressione con backend
+# puro Rust (nessuna dipendenza da zlib/openssl di sistema).
+mysql = { version = "28", optional = true, default-features = false, features = ["minimal-rust", "derive", "buffer-pool"] }
 
 [dev-dependencies]
 tempfile = "3"

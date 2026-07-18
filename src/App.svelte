@@ -18,6 +18,7 @@
   import ResultModal from "./components/ResultModal.svelte";
   import ConfirmModal from "./components/ConfirmModal.svelte";
   import ResultPanel from "./components/ResultPanel.svelte";
+  import PeekModal from "./components/PeekModal.svelte";
 
   onMount(() => {
     initTheme(); // legge la preferenza salvata (auto/light/dark)
@@ -132,6 +133,9 @@
       </div>
     </div>
   {/if}
+
+  <!-- Anteprima dati (peek) read-only. -->
+  <PeekModal />
 
   <!-- Conferma PRIMA dell'operazione, riepilogo DOPO: entrambi sopra tutto. -->
   <ConfirmModal />

@@ -30,6 +30,10 @@ export const compareDatabases = (source, target) =>
 export const compareTableData = (source, target, table) =>
   invoke("compare_table_data", { source, target, table });
 
+// Anteprima read-only delle prime righe di una tabella.
+export const previewTable = (conn, table, limit) =>
+  invoke("preview_table", { conn, table, limit });
+
 // Esporta i dati di tutte le tabelle in una cartella (CSV o JSON).
 export const exportData = (conn, outDir, format) =>
   invoke("export_data", { conn, outDir, format });

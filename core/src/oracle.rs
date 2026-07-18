@@ -920,6 +920,21 @@ pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec
     }
 }
 
+/// Anteprima (read-only) delle prime `limit` righe di una tabella: stessa
+/// lettura di `rust_export` (colonne + valori grezzi come `Option<String>`),
+/// ma limitata e senza scrivere alcun file. Sincrona come `rust_export`.
+pub fn rust_peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
+    #[cfg(feature = "oracle-driver")]
+    {
+        return rustimpl::peek(conn, table, limit);
+    }
+    #[cfg(not(feature = "oracle-driver"))]
+    {
+        let _ = (conn, table, limit);
+        Err(no_driver())
+    }
+}
+
 /// Confronto DATI riga-per-riga di una tabella Oracle: righe accoppiate per
 /// chiave primaria (o per riga intera in assenza di PK), classificate come
 /// solo-sorgente / solo-destinazione / cambiate / uguali.
@@ -1762,6 +1777,38 @@ mod rustimpl {
             files.push(path.display().to_string());
         }
         Ok(files)
+    }
+
+    /// Anteprima read-only delle prime `limit` righe di una tabella: stessa
+    /// lettura di `export` (`columns()` + `select_list`, valori come
+    /// `Option<String>` grezzi), ma con `FETCH FIRST ... ROWS ONLY` (Oracle
+    /// 12c+) al posto del ciclo su tutte le righe, e senza scrivere file.
+    pub fn peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
+        let c = connect(conn)?;
+        let cols = columns(&c, table)?;
+        let colnames: Vec<String> = cols.iter().map(|col| col.name.clone()).collect();
+
+        let sel = select_list(&cols);
+        let query_rows = c
+            .query(
+                &format!("SELECT {sel} FROM \"{table}\" FETCH FIRST {limit} ROWS ONLY"),
+                &[],
+            )
+            .map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+        for r in query_rows {
+            let r = r.map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+            let mut vals = Vec::with_capacity(cols.len());
+            for i in 0..cols.len() {
+                let v = r
+                    .get::<usize, Option<String>>(i)
+                    .map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+                vals.push(v);
+            }
+            rows.push(vals);
+        }
+        Ok((colnames, rows))
     }
 
     pub fn clone(src: &Connection, dst: &Connection, dry: bool, log: &mut Vec<String>) -> Result<()> {

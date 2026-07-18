@@ -6,7 +6,9 @@
 
 use charon_core::compare::DbDiff;
 use charon_core::connections::{self, ConnectionProfile};
-use charon_core::model::{CloneOptions, Connection, EngineReport, Method, OpResult, Prefer};
+use charon_core::model::{
+    CloneOptions, Connection, EngineReport, Method, OpResult, Prefer, TablePreview,
+};
 use charon_core::ops;
 use tauri::{AppHandle, Emitter};
 
@@ -154,6 +156,17 @@ async fn export_data(
     run_blocking_res(app, move || ops::export_data(&conn, &out_dir, &format)).await
 }
 
+/// Anteprima read-only delle prime `limit` righe di una tabella.
+#[tauri::command]
+async fn preview_table(
+    app: AppHandle,
+    conn: Connection,
+    table: String,
+    limit: u32,
+) -> std::result::Result<TablePreview, String> {
+    run_blocking_res(app, move || ops::preview_table(&conn, &table, limit)).await
+}
+
 /// Confronto DATI (riga per riga, per chiave primaria) di una singola tabella.
 /// Sola lettura, eseguito su richiesta.
 #[tauri::command]
@@ -245,6 +258,7 @@ pub fn run() {
             clone_database,
             compare_databases,
             compare_table_data,
+            preview_table,
             export_data,
             export_diff,
             sync_plan,

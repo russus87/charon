@@ -345,6 +345,21 @@ pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec
     }
 }
 
+/// Anteprima **read-only** delle prime `limit` righe di una tabella: stessa
+/// lettura grezza di `rust_export` ma limitata, utile per un'occhiata rapida
+/// senza esportare l'intera tabella. Sincrona come le altre operazioni SQLite.
+pub fn rust_peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
+    #[cfg(feature = "sqlite-driver")]
+    {
+        return rustimpl::peek(conn, table, limit);
+    }
+    #[cfg(not(feature = "sqlite-driver"))]
+    {
+        let _ = (conn, table, limit);
+        Err(no_driver())
+    }
+}
+
 /// Legge lo **schema neutro** (indipendente dal motore) di un database SQLite:
 /// tabelle utente e colonne, con i tipi dichiarati mappati su [`AbstractType`]
 /// secondo le regole di affinità di SQLite. Sincrona come le altre operazioni.
@@ -1071,6 +1086,44 @@ mod rustimpl {
             files.push(path);
         }
         Ok(files)
+    }
+
+    /// Anteprima read-only delle prime `limit` righe di una tabella: stessa
+    /// conversione grezza di `export` (Null→None, Integer/Real→to_string,
+    /// Text→utf8, Blob→hex), ma su un `SELECT ... LIMIT` invece che sull'intera
+    /// tabella.
+    pub fn peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
+        let c = open_ro(db_path(conn))?;
+        let mut st = c
+            .prepare(&format!("SELECT * FROM \"{table}\" LIMIT {limit}"))
+            .map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+        let columns: Vec<String> = st.column_names().into_iter().map(|s| s.to_string()).collect();
+        let ncol = columns.len();
+
+        let mut sql_rows = st.query([]).map_err(|e| Error::Msg(e.to_string()))?;
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+        while let Some(r) = sql_rows.next().map_err(|e| Error::Msg(e.to_string()))? {
+            let mut row = Vec::with_capacity(ncol);
+            for i in 0..ncol {
+                let v = r.get_ref(i).map_err(|e| Error::Msg(e.to_string()))?;
+                let cell = match v {
+                    ValueRef::Null => None,
+                    ValueRef::Integer(i) => Some(i.to_string()),
+                    ValueRef::Real(f) => Some(f.to_string()),
+                    ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
+                    ValueRef::Blob(b) => {
+                        let mut s = String::with_capacity(b.len() * 2);
+                        for byte in b {
+                            s.push_str(&format!("{byte:02x}"));
+                        }
+                        Some(s)
+                    }
+                };
+                row.push(cell);
+            }
+            rows.push(row);
+        }
+        Ok((columns, rows))
     }
 
     pub fn test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {

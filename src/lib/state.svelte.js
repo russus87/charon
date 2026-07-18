@@ -8,6 +8,7 @@ import {
   cloneDatabase,
   compareDatabases,
   syncApply,
+  previewTable,
   listConnections,
   saveConnection,
   deleteConnection,
@@ -57,6 +58,7 @@ export const app = $state({
   diff: null, // ultimo DbDiff del confronto (o null)
   diffErr: null, // errore del confronto, se fallito
   comparing: false, // confronto in corso
+  peek: null, // anteprima read-only di una tabella (o null)
   prefer: "auto", // auto | native | rust
   dryRun: false, // anteprima: non modifica nulla, mostra solo il piano
   dumpPath: "", // file di destinazione del dump
@@ -160,6 +162,24 @@ export const rowsDiffer = (t) =>
 
 // Una tabella è allineata se ha schema uguale e stesso numero di righe.
 export const tableAligned = (t) => t.status === "same" && !rowsDiffer(t);
+
+// --------------------------------------------------------- peek (sola lettura) ---
+
+const PEEK_LIMIT = 100;
+// Apre l'anteprima delle prime righe di `table` su `conn`.
+export async function openPeek(conn, table) {
+  if (!conn) return;
+  app.peek = { table, loading: true, columns: [], rows: [], truncated: false, error: null };
+  try {
+    const r = await previewTable($state.snapshot(conn), table, PEEK_LIMIT);
+    app.peek = { table, loading: false, columns: r.columns, rows: r.rows, truncated: r.truncated, error: null };
+  } catch (e) {
+    app.peek = { table, loading: false, columns: [], rows: [], truncated: false, error: String(e) };
+  }
+}
+export function closePeek() {
+  app.peek = null;
+}
 
 // Applica l'allineamento (schema) alla destinazione. Passa dal popup di conferma.
 const runSyncApply = () => {

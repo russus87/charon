@@ -314,6 +314,21 @@ pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec
     }
 }
 
+/// Anteprima (read-only) delle prime `limit` righe di una tabella: stessa
+/// lettura di `rust_export`, ma limitata e senza scrivere file. Sincrona come
+/// `rust_export`: nessun runtime async necessario.
+pub fn rust_peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
+    #[cfg(feature = "mysql-driver")]
+    {
+        return rustimpl::peek(conn, table, limit);
+    }
+    #[cfg(not(feature = "mysql-driver"))]
+    {
+        let _ = (conn, table, limit);
+        Err(no_driver())
+    }
+}
+
 #[cfg(feature = "mysql-driver")]
 mod rustimpl {
     use super::*;
@@ -1093,6 +1108,34 @@ mod rustimpl {
             files.push(path);
         }
         Ok(files)
+    }
+
+    /// Anteprima read-only delle prime `limit` righe di una tabella: stessa
+    /// lettura di `export` (stessa `raw_value`), ma con `LIMIT` e senza
+    /// scrivere alcun file.
+    pub fn peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
+        let mut client = connect(conn)?;
+        let qr = client
+            .query_iter(format!("SELECT * FROM `{table}` LIMIT {limit}"))
+            .map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+        let columns: Vec<String> = qr
+            .columns()
+            .as_ref()
+            .iter()
+            .map(|c| c.name_str().into_owned())
+            .collect();
+
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+        for row in qr {
+            let row = row.map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+            let mut vals = Vec::with_capacity(row.len());
+            for i in 0..row.len() {
+                let v = row.as_ref(i).cloned().unwrap_or(Value::NULL);
+                vals.push(raw_value(&v));
+            }
+            rows.push(vals);
+        }
+        Ok((columns, rows))
     }
 
     pub fn test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {

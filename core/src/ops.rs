@@ -807,6 +807,21 @@ pub fn export_data(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec
     }
 }
 
+/// Anteprima **read-only** delle prime `limit` righe di una tabella. Non modifica
+/// nulla; serve a sbirciare i dati durante confronto/migrazione.
+pub fn preview_table(conn: &Connection, table: &str, limit: u32) -> Result<TablePreview> {
+    let (conn, _guard) = prepare(conn)?;
+    let (columns, rows) = match conn.engine {
+        Engine::Postgres => postgres::rust_peek(&conn, table, limit)?,
+        Engine::Oracle => oracle::rust_peek(&conn, table, limit)?,
+        Engine::Sqlserver => mssql::rust_peek(&conn, table, limit)?,
+        Engine::Sqlite => sqlite::rust_peek(&conn, table, limit)?,
+        Engine::Mysql => mysql::rust_peek(&conn, table, limit)?,
+    };
+    let truncated = rows.len() as u32 >= limit;
+    Ok(TablePreview { columns, rows, truncated })
+}
+
 /// Verifica la connessione al database.
 pub fn test_connection(conn: &Connection, prefer: Prefer) -> OpResult {
     let (conn, _guard) = match prepare(conn) {

@@ -314,6 +314,21 @@ pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec
     }
 }
 
+/// Anteprima read-only delle prime `limit` righe di una tabella (stessa lettura
+/// di [`rust_export`], ma limitata: niente file scritti su disco). `table` è
+/// nel formato `schema.tabella`, come altrove in questo modulo.
+pub fn rust_peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
+    #[cfg(feature = "mssql-driver")]
+    {
+        return rustimpl::runtime()?.block_on(rustimpl::peek(conn, table, limit));
+    }
+    #[cfg(not(feature = "mssql-driver"))]
+    {
+        let _ = (conn, table, limit);
+        Err(Error::Unsupported("fallback SQL Server non disponibile in questa build".into()))
+    }
+}
+
 #[cfg(feature = "mssql-driver")]
 mod rustimpl {
     use super::*;
@@ -1033,6 +1048,70 @@ mod rustimpl {
         }
 
         Ok(files)
+    }
+
+    /// Anteprima read-only: prime `limit` righe di `schema.tabella`, stessa
+    /// tecnica di [`export`] (colonne da `INFORMATION_SCHEMA.COLUMNS`, righe via
+    /// `FOR JSON PATH, INCLUDE_NULL_VALUES` con i chunk ricomposti prima del
+    /// parsing), ma con `TOP <limit>` e senza scrivere nulla su disco.
+    pub async fn peek(
+        conn: &Connection,
+        table: &str,
+        limit: u32,
+    ) -> Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
+        // `table` è "schema.tabella": lo separiamo per usarlo nelle query di
+        // catalogo e nell'identificatore `[schema].[tabella]`.
+        let (schema, name) = table.split_once('.').unwrap_or(("dbo", table));
+        let full = format!("[{schema}].[{name}]");
+
+        let mut client = connect(conn).await?;
+
+        // Colonne in ordine (come in `export`, ma da INFORMATION_SCHEMA).
+        let col_rows = query(
+            &mut client,
+            &format!(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS \
+                 WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{name}' \
+                 ORDER BY ORDINAL_POSITION"
+            ),
+        )
+        .await?;
+        let columns: Vec<String> = col_rows.iter().map(|r| s(r, 0)).collect();
+        if columns.is_empty() {
+            return Ok((columns, Vec::new()));
+        }
+
+        // Righe: FOR JSON restituisce un'unica stringa JSON spezzata su più
+        // righe di risultato, da ricomporre prima del parsing (come `export`).
+        let json_rows = query(
+            &mut client,
+            &format!("SELECT TOP {limit} * FROM {full} FOR JSON PATH, INCLUDE_NULL_VALUES"),
+        )
+        .await?;
+        let mut json = String::new();
+        for r in &json_rows {
+            json.push_str(&s(r, 0));
+        }
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+        if !json.trim().is_empty() {
+            let parsed: Value =
+                serde_json::from_str(&json).map_err(|e| Error::Msg(e.to_string()))?;
+            if let Value::Array(items) = parsed {
+                for item in &items {
+                    let row = columns
+                        .iter()
+                        .map(|col| match item.get(col) {
+                            None | Some(Value::Null) => None,
+                            Some(Value::String(v)) => Some(v.clone()),
+                            Some(other) => Some(other.to_string()),
+                        })
+                        .collect();
+                    rows.push(row);
+                }
+            }
+        }
+
+        Ok((columns, rows))
     }
 
     fn lit(v: &Value) -> String {

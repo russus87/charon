@@ -1,5 +1,5 @@
 <script>
-  import { app, runCompare, rowsDiffer, tableAligned, connById, requestSyncApply } from "../lib/state.svelte.js";
+  import { app, runCompare, rowsDiffer, tableAligned, connById, requestSyncApply, openPeek } from "../lib/state.svelte.js";
   import { exportDiff, pickReportPath, compareTableData, syncPlan } from "../lib/api.js";
   import ConnPicker from "./ConnPicker.svelte";
 
@@ -39,6 +39,8 @@
   let dataDiffs = $state({});
   // Una tabella esiste da entrambe le parti (quindi il data-diff ha senso)?
   const inBoth = (t) => t.status === "same" || t.status === "changed";
+  // Connessione da cui sbirciare una tabella (quella che la contiene).
+  const peekConn = (t) => (t.status === "only_target" ? cmpDst : cmpSrc);
 
   async function runDataDiff(table) {
     const src = connById(app.sel.cmpSrc);
@@ -163,8 +165,11 @@
               {/if}
             </button>
 
-            {#if inBoth(t) && sameEngine}
-              <div class="data-row">
+            <div class="data-row">
+              <button class="btn ghost sm" onclick={() => openPeek(peekConn(t), t.name)}>
+                👁 Sbircia
+              </button>
+              {#if inBoth(t) && sameEngine}
                 {#if !dataDiffs[t.name]}
                   <button class="btn ghost sm" onclick={() => runDataDiff(t.name)}>
                     Confronta dati →
@@ -196,8 +201,8 @@
                     </details>
                   {/if}
                 {/if}
-              </div>
-            {/if}
+              {/if}
+            </div>
 
             {#if open[t.name] && t.columns.length}
               <div class="cols">

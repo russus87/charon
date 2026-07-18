@@ -391,6 +391,25 @@ pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec
     }
 }
 
+/// Anteprima read-only delle righe di UNA tabella (colonne + valori grezzi),
+/// limitata a `limit` righe. Stesso pattern delle altre `rust_*`: runtime
+/// tokio dedicato + `block_on`.
+pub fn rust_peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
+    #[cfg(feature = "pg-driver")]
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| Error::Msg(format!("runtime tokio: {e}")))?;
+        return rt.block_on(rustimpl::peek(conn, table, limit));
+    }
+    #[cfg(not(feature = "pg-driver"))]
+    {
+        let _ = (conn, table, limit);
+        Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
+    }
+}
+
 /// Confronta i **dati** di una tabella riga per riga (per chiave primaria, o
 /// per riga intera se la tabella non ne ha una): a differenza di `rust_compare`,
 /// che si ferma al conteggio, distingue righe aggiunte, rimosse e modificate.
@@ -1397,5 +1416,47 @@ mod rustimpl {
             written.push(path);
         }
         Ok(written)
+    }
+
+    // ------------------------------------------------------------ peek ---
+
+    /// Anteprima read-only di UNA tabella: stessa logica di `export` (colonne
+    /// da information_schema, valori grezzi da `to_json`), ma limitata alle
+    /// prime `limit` righe e senza scrivere alcun file. La tabella arriva già
+    /// validata dal catalogo (`list_tables`/schema), quindi l'interpolazione
+    /// diretta nel nome è sicura come nel resto del file; `limit` è un intero
+    /// e viene interpolato direttamente nella query.
+    pub async fn peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<String>, Vec<Vec<Option<String>>>)> {
+        let client = connect(conn).await?;
+
+        let columns: Vec<String> = column_defs(&client, table)
+            .await?
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+
+        let json_rows = client
+            .query(
+                format!("SELECT to_json(t) FROM \"{table}\" t LIMIT {limit}").as_str(),
+                &[],
+            )
+            .await
+            .map_err(perr)?;
+
+        let mut rows: Vec<Vec<Option<String>>> = Vec::with_capacity(json_rows.len());
+        for r in &json_rows {
+            let row_json: Value = r.get(0);
+            let row: Vec<Option<String>> = columns
+                .iter()
+                .map(|c| match row_json.get(c) {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(s)) => Some(s.clone()),
+                    Some(other) => Some(other.to_string()),
+                })
+                .collect();
+            rows.push(row);
+        }
+
+        Ok((columns, rows))
     }
 }

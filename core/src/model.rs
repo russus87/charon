@@ -228,6 +228,16 @@ pub struct EngineReport {
     pub hints: Vec<FixHint>,
 }
 
+/// Anteprima (sola lettura) delle prime righe di una tabella.
+#[derive(Debug, Clone, Serialize)]
+pub struct TablePreview {
+    pub columns: Vec<String>,
+    /// Righe: una cella `None` è un NULL.
+    pub rows: Vec<Vec<Option<String>>>,
+    /// `true` se la tabella potrebbe avere più righe di quelle mostrate.
+    pub truncated: bool,
+}
+
 /// Esito di un'operazione (dump/import/clone/test).
 #[derive(Debug, Clone, Serialize)]
 pub struct OpResult {

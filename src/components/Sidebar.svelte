@@ -27,6 +27,9 @@
     // Sbircia: una lente (browse dati read-only).
     { id: "sbircia", label: "Sbircia",
       icon: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm5.5 12.5L21 21" },
+    // SQL: parentesi angolari (editor query).
+    { id: "sql", label: "SQL",
+      icon: "M8 8l-4 4 4 4M16 8l4 4-4 4M13 5l-2 14" },
     { id: "tools", label: "Strumenti",
       icon: "M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z" },
   ];

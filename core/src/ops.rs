@@ -807,6 +807,20 @@ pub fn export_data(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec
     }
 }
 
+/// Esegue una query SQL libera e restituisce righe (per i SELECT) o il numero di
+/// righe modificate. **Attenzione**: la query viene eseguita così com'è e può
+/// modificare il database.
+pub fn run_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+    let (conn, _guard) = prepare(conn)?;
+    match conn.engine {
+        Engine::Postgres => postgres::rust_query(&conn, sql),
+        Engine::Oracle => oracle::rust_query(&conn, sql),
+        Engine::Sqlserver => mssql::rust_query(&conn, sql),
+        Engine::Sqlite => sqlite::rust_query(&conn, sql),
+        Engine::Mysql => mysql::rust_query(&conn, sql),
+    }
+}
+
 /// Schema neutro di una connessione (elenco tabelle + colonne). Sola lettura;
 /// usato dal browser "Sbircia".
 pub fn schema(conn: &Connection) -> Result<crate::schema::SchemaModel> {

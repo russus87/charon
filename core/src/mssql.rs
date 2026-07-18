@@ -329,11 +329,25 @@ pub fn rust_peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<Stri
     }
 }
 
+/// Esegue una query SQL **libera** (SELECT, DML o DDL) su SQL Server e ne
+/// ritorna l'esito in forma neutra (vedi [`QueryResult`]).
+pub fn rust_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+    #[cfg(feature = "mssql-driver")]
+    {
+        return rustimpl::runtime()?.block_on(rustimpl::run_query(conn, sql));
+    }
+    #[cfg(not(feature = "mssql-driver"))]
+    {
+        let _ = (conn, sql);
+        Err(Error::Unsupported("fallback SQL Server non disponibile in questa build".into()))
+    }
+}
+
 #[cfg(feature = "mssql-driver")]
 mod rustimpl {
     use super::*;
     use serde_json::Value;
-    use tiberius::{AuthMethod, Client, Config, Row};
+    use tiberius::{numeric::Numeric, AuthMethod, Client, Config, Row, Uuid};
     use tokio::net::TcpStream;
     use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
@@ -1112,6 +1126,104 @@ mod rustimpl {
         }
 
         Ok((columns, rows))
+    }
+
+    // -------------------------------------------------------------- query ---
+
+    /// Legge una singola cella come stringa, provando in ordine i tipi comuni
+    /// (testo, booleano, interi via le loro varie ampiezze, virgola mobile,
+    /// UUID, decimal/numeric, binario come esadecimale). `tiberius::try_get`
+    /// fallisce con `Err` se il tipo richiesto non combacia con quello della
+    /// colonna, quindi proviamo i tipi in cascata finché uno funziona.
+    /// I tipi data/ora non sono gestiti: questa build non abilita le feature
+    /// `chrono`/`time` del driver, quindi per quelle colonne ritorniamo un
+    /// segnaposto invece di far fallire l'intera query.
+    fn cell_to_string(row: &Row, idx: usize) -> Option<String> {
+        if let Ok(v) = row.try_get::<&str, _>(idx) {
+            return v.map(|x| x.to_string());
+        }
+        if let Ok(v) = row.try_get::<bool, _>(idx) {
+            return v.map(|x| x.to_string());
+        }
+        if let Ok(v) = row.try_get::<u8, _>(idx) {
+            return v.map(|x| x.to_string());
+        }
+        if let Ok(v) = row.try_get::<i16, _>(idx) {
+            return v.map(|x| x.to_string());
+        }
+        if let Ok(v) = row.try_get::<i32, _>(idx) {
+            return v.map(|x| x.to_string());
+        }
+        if let Ok(v) = row.try_get::<i64, _>(idx) {
+            return v.map(|x| x.to_string());
+        }
+        if let Ok(v) = row.try_get::<f32, _>(idx) {
+            return v.map(|x| x.to_string());
+        }
+        if let Ok(v) = row.try_get::<f64, _>(idx) {
+            return v.map(|x| x.to_string());
+        }
+        if let Ok(v) = row.try_get::<Uuid, _>(idx) {
+            return v.map(|x| x.to_string());
+        }
+        if let Ok(v) = row.try_get::<Numeric, _>(idx) {
+            return v.map(|x| x.to_string());
+        }
+        if let Ok(v) = row.try_get::<&[u8], _>(idx) {
+            return v.map(|bytes| {
+                let hex: String = bytes.iter().map(|b| format!("{b:02X}")).collect();
+                format!("0x{hex}")
+            });
+        }
+        // Nessun tipo noto ha funzionato (tipicamente date/ora): meglio un
+        // segnaposto leggibile che far fallire l'intera query.
+        Some("<non rappresentabile>".into())
+    }
+
+    /// Esegue una query SQL libera (SELECT, DML o DDL) e ritorna l'esito in
+    /// forma neutra. Un solo giro con `simple_query`: se il batch produce un
+    /// result set (SELECT) lo leggiamo riga per riga con [`cell_to_string`];
+    /// altrimenti (INSERT/UPDATE/DELETE/DDL, o un SELECT senza righe) `simple_query`
+    /// ritorna un result set vuoto — non essendoci un secondo giro con `execute`,
+    /// non conosciamo il conteggio esatto delle righe modificate (evitiamo così
+    /// di rieseguire due volte lo stesso batch, che per una DML sarebbe pericoloso).
+    pub async fn run_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+        let mut client = connect(conn).await?;
+
+        let rows = client
+            .simple_query(sql)
+            .await
+            .map_err(|e| Error::Msg(e.to_string()))?
+            .into_first_result()
+            .await
+            .map_err(|e| Error::Msg(e.to_string()))?;
+
+        if rows.is_empty() {
+            return Ok(QueryResult {
+                columns: vec![],
+                rows: vec![],
+                affected: None,
+                message: "Eseguito (nessuna riga restituita)".into(),
+            });
+        }
+
+        let columns: Vec<String> = rows[0]
+            .columns()
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        let out_rows: Vec<Vec<Option<String>>> = rows
+            .iter()
+            .map(|row| (0..columns.len()).map(|idx| cell_to_string(row, idx)).collect())
+            .collect();
+        let n = out_rows.len();
+
+        Ok(QueryResult {
+            columns,
+            rows: out_rows,
+            affected: None,
+            message: format!("{n} righe"),
+        })
     }
 
     fn lit(v: &Value) -> String {

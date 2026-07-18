@@ -410,6 +410,26 @@ pub fn rust_peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<Stri
     }
 }
 
+/// Esegue una query SQL libera (scratch runner): nessun parametro, la query
+/// viene eseguita così com'è tramite `simple_query`. Se produce un result set
+/// ritorna colonne + righe, altrimenti il conteggio delle righe modificate.
+/// Stesso pattern delle altre `rust_*`: runtime tokio dedicato + `block_on`.
+pub fn rust_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+    #[cfg(feature = "pg-driver")]
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| Error::Msg(format!("runtime tokio: {e}")))?;
+        return rt.block_on(rustimpl::run_query(conn, sql));
+    }
+    #[cfg(not(feature = "pg-driver"))]
+    {
+        let _ = (conn, sql);
+        Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
+    }
+}
+
 /// Confronta i **dati** di una tabella riga per riga (per chiave primaria, o
 /// per riga intera se la tabella non ne ha una): a differenza di `rust_compare`,
 /// che si ferma al conteggio, distingue righe aggiunte, rimosse e modificate.
@@ -447,7 +467,12 @@ mod rustimpl {
     }
 
     fn perr(e: tokio_postgres::Error) -> Error {
-        Error::Msg(e.to_string())
+        // Il Display di tokio_postgres è generico ("db error"): il messaggio utile
+        // sta nel DbError sottostante (es. «relation "x" does not exist»).
+        match e.as_db_error() {
+            Some(db) => Error::Msg(db.message().to_string()),
+            None => Error::Msg(e.to_string()),
+        }
     }
 
     /// Hash deterministico (non crittografico) → esadecimale a 16 cifre.
@@ -1458,5 +1483,55 @@ mod rustimpl {
         }
 
         Ok((columns, rows))
+    }
+
+    // -------------------------------------------------------- query libera ---
+
+    /// Esegue una query SQL libera (scratch runner) con `simple_query`: nessun
+    /// parametro, la query gira così com'è (la "validazione" è l'esecuzione
+    /// stessa: un SQL invalido torna come `Err`). Se produce righe, le colonne
+    /// sono lette dalla prima riga; altrimenti si accumula il conteggio delle
+    /// righe modificate dai vari `CommandComplete`.
+    pub async fn run_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+        let client = connect(conn).await?;
+        let msgs = client.simple_query(sql).await.map_err(perr)?;
+
+        let mut columns: Vec<String> = Vec::new();
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+        let mut affected: u64 = 0;
+
+        for msg in &msgs {
+            match msg {
+                tokio_postgres::SimpleQueryMessage::Row(r) => {
+                    if columns.is_empty() {
+                        columns = r.columns().iter().map(|c| c.name().to_string()).collect();
+                    }
+                    let row: Vec<Option<String>> = (0..columns.len())
+                        .map(|i| r.get(i).map(|s| s.to_string()))
+                        .collect();
+                    rows.push(row);
+                }
+                tokio_postgres::SimpleQueryMessage::CommandComplete(n) => {
+                    affected += n;
+                }
+                _ => {}
+            }
+        }
+
+        if !rows.is_empty() {
+            Ok(QueryResult {
+                message: format!("{} righe", rows.len()),
+                columns,
+                rows,
+                affected: None,
+            })
+        } else {
+            Ok(QueryResult {
+                columns: vec![],
+                rows: vec![],
+                affected: Some(affected),
+                message: format!("Eseguito · {affected} righe modificate"),
+            })
+        }
     }
 }

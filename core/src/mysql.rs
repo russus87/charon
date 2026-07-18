@@ -329,9 +329,26 @@ pub fn rust_peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<Stri
     }
 }
 
+/// Esegue una query SQL libera (SELECT o comando DML/DDL) e ne restituisce
+/// l'esito in forma neutra: result set con colonne/righe per le query di
+/// lettura, righe modificate per le altre. Sincrona come le altre funzioni
+/// `rust_*`: nessun runtime async necessario.
+pub fn rust_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+    #[cfg(feature = "mysql-driver")]
+    {
+        return rustimpl::run_query(conn, sql);
+    }
+    #[cfg(not(feature = "mysql-driver"))]
+    {
+        let _ = (conn, sql);
+        Err(no_driver())
+    }
+}
+
 #[cfg(feature = "mysql-driver")]
 mod rustimpl {
     use super::*;
+    use crate::model::QueryResult;
     use mysql::prelude::Queryable;
     use mysql::{Conn, OptsBuilder, Value};
     use std::collections::HashMap;
@@ -1136,6 +1153,53 @@ mod rustimpl {
             rows.push(vals);
         }
         Ok((columns, rows))
+    }
+
+    /// Esegue una query SQL libera. Se il result set restituito ha colonne
+    /// (query di lettura, es. SELECT/SHOW) le righe vengono lette con
+    /// `raw_value` (stessa lettura di `export`/`peek`); altrimenti (comando
+    /// DML/DDL senza result set) si consuma l'iteratore e si legge il numero
+    /// di righe modificate da `affected_rows`.
+    pub fn run_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+        let mut client = connect(conn)?;
+        let qr = client
+            .query_iter(sql)
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let columns: Vec<String> = qr
+            .columns()
+            .as_ref()
+            .iter()
+            .map(|c| c.name_str().into_owned())
+            .collect();
+
+        if !columns.is_empty() {
+            let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+            for row in qr {
+                let row = row.map_err(|e| Error::Msg(e.to_string()))?;
+                let mut vals = Vec::with_capacity(row.len());
+                for i in 0..row.len() {
+                    let v = row.as_ref(i).cloned().unwrap_or(Value::NULL);
+                    vals.push(raw_value(&v));
+                }
+                rows.push(vals);
+            }
+            let message = format!("{} righe", rows.len());
+            Ok(QueryResult { columns, rows, affected: None, message })
+        } else {
+            // Nessun result set (query non-SELECT): consuma comunque
+            // l'iteratore (necessario per finalizzare lo statement) prima di
+            // leggere il numero di righe modificate.
+            for row in qr {
+                row.map_err(|e| Error::Msg(e.to_string()))?;
+            }
+            let n = client.affected_rows();
+            Ok(QueryResult {
+                columns: vec![],
+                rows: vec![],
+                affected: Some(n),
+                message: format!("Eseguito · {n} righe modificate"),
+            })
+        }
     }
 
     pub fn test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {

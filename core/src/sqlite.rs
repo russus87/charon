@@ -360,6 +360,22 @@ pub fn rust_peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<Stri
     }
 }
 
+/// Esegue una query SQL libera (SELECT o DML/DDL) e ritorna un esito uniforme:
+/// per un SELECT, colonne+righe lette grezze come in `rust_peek`/`rust_export`;
+/// per un comando (INSERT/UPDATE/DELETE/DDL), il numero di righe modificate.
+/// Sincrona come le altre operazioni SQLite.
+pub fn rust_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+    #[cfg(feature = "sqlite-driver")]
+    {
+        return rustimpl::run_query(conn, sql);
+    }
+    #[cfg(not(feature = "sqlite-driver"))]
+    {
+        let _ = (conn, sql);
+        Err(no_driver())
+    }
+}
+
 /// Legge lo **schema neutro** (indipendente dal motore) di un database SQLite:
 /// tabelle utente e colonne, con i tipi dichiarati mappati su [`AbstractType`]
 /// secondo le regole di affinità di SQLite. Sincrona come le altre operazioni.
@@ -378,6 +394,7 @@ pub fn rust_read_schema(conn: &Connection) -> Result<SchemaModel> {
 #[cfg(feature = "sqlite-driver")]
 mod rustimpl {
     use super::*;
+    use crate::model::QueryResult;
     use rusqlite::types::ValueRef;
     use rusqlite::{Connection as Sql, OpenFlags};
     use std::collections::HashMap;
@@ -1124,6 +1141,61 @@ mod rustimpl {
             rows.push(row);
         }
         Ok((columns, rows))
+    }
+
+    /// Esegue una query SQL libera. Apre sempre in **scrittura**: una query
+    /// libera può essere un INSERT/UPDATE/DELETE/DDL, non solo un SELECT.
+    /// Se la statement produce colonne (`column_count() > 0`) è un result set
+    /// (SELECT o simili): legge nomi colonna e righe con la stessa conversione
+    /// grezza di `peek`/`export` (Null→None, Integer/Real→to_string,
+    /// Text→utf8, Blob→hex). Altrimenti è un comando: lo esegue e riporta le
+    /// righe modificate.
+    pub fn run_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+        let c = open_rw(db_path(conn))?;
+        let mut stmt = c.prepare(sql).map_err(|e| Error::Msg(e.to_string()))?;
+
+        if stmt.column_count() > 0 {
+            let columns: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
+            let ncol = columns.len();
+            let mut sql_rows = stmt.query([]).map_err(|e| Error::Msg(e.to_string()))?;
+            let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+            while let Some(r) = sql_rows.next().map_err(|e| Error::Msg(e.to_string()))? {
+                let mut row = Vec::with_capacity(ncol);
+                for i in 0..ncol {
+                    let v = r.get_ref(i).map_err(|e| Error::Msg(e.to_string()))?;
+                    let cell = match v {
+                        ValueRef::Null => None,
+                        ValueRef::Integer(i) => Some(i.to_string()),
+                        ValueRef::Real(f) => Some(f.to_string()),
+                        ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
+                        ValueRef::Blob(b) => {
+                            let mut s = String::with_capacity(b.len() * 2);
+                            for byte in b {
+                                s.push_str(&format!("{byte:02x}"));
+                            }
+                            Some(s)
+                        }
+                    };
+                    row.push(cell);
+                }
+                rows.push(row);
+            }
+            let n = rows.len();
+            Ok(QueryResult {
+                columns,
+                rows,
+                affected: None,
+                message: format!("{n} righe"),
+            })
+        } else {
+            let n = stmt.execute([]).map_err(|e| Error::Msg(e.to_string()))?;
+            Ok(QueryResult {
+                columns: vec![],
+                rows: vec![],
+                affected: Some(n as u64),
+                message: format!("Eseguito · {n} righe modificate"),
+            })
+        }
     }
 
     pub fn test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {

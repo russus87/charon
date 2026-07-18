@@ -37,6 +37,9 @@ export const previewTable = (conn, table, limit) =>
 // Schema (elenco tabelle + colonne) di una connessione, per il browser dati.
 export const browseSchema = (conn) => invoke("browse_schema", { conn });
 
+// Esegue una query SQL libera e ne restituisce il risultato.
+export const runQuery = (conn, sql) => invoke("run_query", { conn, sql });
+
 // Esporta i dati di tutte le tabelle in una cartella (CSV o JSON).
 export const exportData = (conn, outDir, format) =>
   invoke("export_data", { conn, outDir, format });

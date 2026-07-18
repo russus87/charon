@@ -7,7 +7,7 @@
 use charon_core::compare::DbDiff;
 use charon_core::connections::{self, ConnectionProfile};
 use charon_core::model::{
-    CloneOptions, Connection, EngineReport, Method, OpResult, Prefer, TablePreview,
+    CloneOptions, Connection, EngineReport, Method, OpResult, Prefer, QueryResult, TablePreview,
 };
 use charon_core::schema::SchemaModel;
 use charon_core::ops;
@@ -157,6 +157,16 @@ async fn export_data(
     run_blocking_res(app, move || ops::export_data(&conn, &out_dir, &format)).await
 }
 
+/// Esegue una query SQL libera. ATTENZIONE: può modificare il database.
+#[tauri::command]
+async fn run_query(
+    app: AppHandle,
+    conn: Connection,
+    sql: String,
+) -> std::result::Result<QueryResult, String> {
+    run_blocking_res(app, move || ops::run_query(&conn, &sql)).await
+}
+
 /// Schema (elenco tabelle + colonne) di una connessione, per il browser dati.
 #[tauri::command]
 async fn browse_schema(
@@ -270,6 +280,7 @@ pub fn run() {
             compare_table_data,
             preview_table,
             browse_schema,
+            run_query,
             export_data,
             export_diff,
             sync_plan,

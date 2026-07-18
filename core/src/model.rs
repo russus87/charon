@@ -228,6 +228,19 @@ pub struct EngineReport {
     pub hints: Vec<FixHint>,
 }
 
+/// Esito dell'esecuzione di una query SQL libera.
+#[derive(Debug, Clone, Serialize)]
+pub struct QueryResult {
+    /// Nomi colonna (vuoto se la query non produce un result set).
+    pub columns: Vec<String>,
+    /// Righe del result set (cella `None` = NULL).
+    pub rows: Vec<Vec<Option<String>>>,
+    /// Righe modificate, per le query che non producono un result set.
+    pub affected: Option<u64>,
+    /// Messaggio leggibile di riepilogo.
+    pub message: String,
+}
+
 /// Anteprima (sola lettura) delle prime righe di una tabella.
 #[derive(Debug, Clone, Serialize)]
 pub struct TablePreview {

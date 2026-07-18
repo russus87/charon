@@ -935,6 +935,22 @@ pub fn rust_peek(conn: &Connection, table: &str, limit: u32) -> Result<(Vec<Stri
     }
 }
 
+/// Esegue una query SQL libera (SELECT o comando DML/DDL) e ne restituisce
+/// l'esito in forma neutra: result set (colonne + righe, lettura grezza come
+/// `Option<String>`) per le query, righe modificate per gli altri statement.
+/// Sincrona come le altre `rust_*`.
+pub fn rust_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+    #[cfg(feature = "oracle-driver")]
+    {
+        return rustimpl::run_query(conn, sql);
+    }
+    #[cfg(not(feature = "oracle-driver"))]
+    {
+        let _ = (conn, sql);
+        Err(no_driver())
+    }
+}
+
 /// Confronto DATI riga-per-riga di una tabella Oracle: righe accoppiate per
 /// chiave primaria (o per riga intera in assenza di PK), classificate come
 /// solo-sorgente / solo-destinazione / cambiate / uguali.
@@ -1809,6 +1825,51 @@ mod rustimpl {
             rows.push(vals);
         }
         Ok((colnames, rows))
+    }
+
+    /// Esegue una query SQL libera. Prepariamo lo statement per capire se e'
+    /// una query (`is_query`, in base al tipo rilevato dal parser Oracle):
+    /// per un SELECT leggiamo il result set (nomi colonna da `column_info`,
+    /// valori grezzi come `Option<String>`, come `peek`/`export`); per un
+    /// DML/DDL eseguiamo e leggiamo le righe modificate da `row_count`, poi
+    /// facciamo il commit esplicito (il driver Oracle non e' in autocommit).
+    pub fn run_query(conn: &Connection, sql: &str) -> Result<QueryResult> {
+        use crate::model::QueryResult;
+
+        let c = connect(conn)?;
+        let mut stmt = c.statement(sql).build().map_err(|e| Error::Msg(e.to_string()))?;
+        if stmt.is_query() {
+            let rows = stmt.query(&[]).map_err(|e| Error::Msg(e.to_string()))?;
+            let columns: Vec<String> = rows
+                .column_info()
+                .iter()
+                .map(|ci| ci.name().to_string())
+                .collect();
+            let mut data: Vec<Vec<Option<String>>> = Vec::new();
+            for row in rows {
+                let row = row.map_err(|e| Error::Msg(e.to_string()))?;
+                let mut vals = Vec::with_capacity(columns.len());
+                for i in 0..columns.len() {
+                    let v = row
+                        .get::<usize, Option<String>>(i)
+                        .map_err(|e| Error::Msg(e.to_string()))?;
+                    vals.push(v);
+                }
+                data.push(vals);
+            }
+            let message = format!("{} righe", data.len());
+            Ok(QueryResult { columns, rows: data, affected: None, message })
+        } else {
+            let n = c.execute(sql, &[]).map_err(|e| Error::Msg(e.to_string()))?;
+            let aff = n.row_count().unwrap_or(0);
+            c.commit().map_err(|e| Error::Msg(e.to_string()))?;
+            Ok(QueryResult {
+                columns: vec![],
+                rows: vec![],
+                affected: Some(aff),
+                message: format!("Eseguito · {aff} righe modificate"),
+            })
+        }
     }
 
     pub fn clone(src: &Connection, dst: &Connection, dry: bool, log: &mut Vec<String>) -> Result<()> {

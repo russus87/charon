@@ -663,3 +663,43 @@ fn read_schema_legge_default_auto_increment_indici_e_fk() {
     assert!(col(assoc, "a").primary_key);
     assert!(col(assoc, "b").primary_key);
 }
+
+/// Una query libera SELECT deve tornare colonne + righe lette grezze (stessa
+/// conversione di `peek`/`export`), senza `affected`.
+#[test]
+fn query_select_ritorna_colonne_e_righe() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let src = seeded(d, "src", Prefer::Rust);
+
+    let r = charon_core::sqlite::rust_query(&src, "SELECT id, nome, voto FROM autori ORDER BY id")
+        .expect("select");
+    assert_eq!(r.columns, vec!["id".to_string(), "nome".to_string(), "voto".to_string()]);
+    assert_eq!(r.rows.len(), 2, "attese 2 righe: {:?}", r.rows);
+    assert_eq!(r.rows[0][1].as_deref(), Some("Manzoni"));
+    assert_eq!(r.affected, None);
+    assert!(r.message.contains('2'), "messaggio senza il conteggio righe: {}", r.message);
+}
+
+/// Una query libera INSERT/UPDATE/DELETE deve tornare `affected` col numero di
+/// righe modificate, e la modifica deve essere realmente persistita sul file.
+#[test]
+fn query_insert_ritorna_righe_modificate_e_persiste() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let src = seeded(d, "src", Prefer::Rust);
+
+    let r = charon_core::sqlite::rust_query(
+        &src,
+        "INSERT INTO autori (id, nome, voto) VALUES (3, 'Leopardi', 6.0)",
+    )
+    .expect("insert");
+    assert!(r.columns.is_empty());
+    assert!(r.rows.is_empty());
+    assert_eq!(r.affected, Some(1));
+    assert!(r.message.contains('1'), "messaggio senza il conteggio: {}", r.message);
+
+    // Verifica che sia stato davvero scritto sul file (query separata).
+    let check = charon_core::sqlite::rust_query(&src, "SELECT count(*) FROM autori").expect("count");
+    assert_eq!(check.rows[0][0].as_deref(), Some("3"), "l'INSERT non è stato persistito");
+}

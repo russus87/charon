@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "dev:app": "LD_LIBRARY_PATH=\"$(ls -d \"$HOME\"/.local/share/charon/instantclient/instantclient_* 2>/dev/null | head -1)${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\" tauri dev"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

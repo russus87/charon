@@ -19,9 +19,11 @@
   let masking = $derived(opts.mask.length > 0);
   // Il masking richiede il puro Rust: solo PostgreSQL (in base alla sorgente).
   let pgOnly = $derived(src?.engine === "postgres");
-  // Sorgente e destinazione devono usare lo stesso motore.
-  let mismatch = $derived(!!src && !!dst && src.engine !== dst.engine);
-  let ready = $derived(!!app.sel.cloneSrc && !!app.sel.cloneDst && !mismatch);
+  // Motori diversi → migrazione cross-motore (best-effort). Consentita per il
+  // clone pieno, ma data-only/masking richiedono lo stesso motore.
+  let crossEngine = $derived(!!src && !!dst && src.engine !== dst.engine);
+  let crossBlocked = $derived(crossEngine && (opts.dataOnly || masking));
+  let ready = $derived(!!app.sel.cloneSrc && !!app.sel.cloneDst && !crossBlocked);
 </script>
 
 <div class="workspace">
@@ -41,10 +43,17 @@
 
     <ConnPicker bind:selectedId={app.sel.cloneDst} title="Destinazione" />
 
-    {#if mismatch}
+    {#if crossEngine}
+      <p class="info-note">
+        🔀 Migrazione <b>cross-motore</b> ({engineLabel(src.engine)} → {engineLabel(dst.engine)}):
+        schema tradotto nel dialetto di destinazione e dati trasferiti, <b>best-effort</b>. Le
+        tabelle di destinazione con lo stesso nome vengono ricreate.
+      </p>
+    {/if}
+    {#if crossBlocked}
       <p class="warn-note">
-        ⚠️ Sorgente ({engineLabel(src.engine)}) e destinazione ({engineLabel(dst.engine)})
-        devono usare lo <b>stesso motore</b>.
+        ⚠️ Solo dati e mascheramento non sono disponibili nella migrazione cross-motore:
+        richiedono lo <b>stesso motore</b>.
       </p>
     {/if}
 
@@ -105,7 +114,7 @@
     <div class="card bar">
       <PreferPicker />
       <button class="btn primary" disabled={app.busy || !ready} onclick={requestClone}>
-        {opts.dataOnly ? "Sincronizza dati" : "Clona database"}
+        {crossEngine ? "Migra" : opts.dataOnly ? "Sincronizza dati" : "Clona database"}
       </button>
     </div>
   </div>
@@ -130,6 +139,14 @@
     font-size: 12.5px;
     color: var(--warn);
     background: var(--warn-soft);
+    padding: 9px 12px;
+    border-radius: var(--radius-sm);
+  }
+  .info-note {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    background: var(--surface-2);
     padding: 9px 12px;
     border-radius: var(--radius-sm);
   }

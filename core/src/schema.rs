@@ -212,6 +212,32 @@ impl SchemaModel {
     }
 }
 
+/// Cita un identificatore nel dialetto del motore.
+pub fn quote_ident(engine: Engine, name: &str) -> String {
+    match engine {
+        Engine::Sqlserver => format!("[{name}]"),
+        Engine::Mysql => format!("`{name}`"),
+        // PostgreSQL, Oracle, SQLite: virgolette doppie.
+        _ => format!("\"{name}\""),
+    }
+}
+
+/// `CREATE TABLE` per una tabella del modello, nel dialetto del motore target:
+/// colonne (tipo tradotto via [`AbstractType::to_ddl`]) + eventuale PRIMARY KEY.
+pub fn create_table_ddl(t: &Table, engine: Engine) -> String {
+    let mut defs: Vec<String> = t
+        .columns
+        .iter()
+        .map(|c| format!("  {} {}", quote_ident(engine, &c.name), c.to_ddl(engine)))
+        .collect();
+    let pk = t.pk_columns();
+    if !pk.is_empty() {
+        let cols = pk.iter().map(|c| quote_ident(engine, c)).collect::<Vec<_>>().join(", ");
+        defs.push(format!("  PRIMARY KEY ({cols})"));
+    }
+    format!("CREATE TABLE {} (\n{}\n);", quote_ident(engine, &t.name), defs.join(",\n"))
+}
+
 /// Definizione «logica» di una colonna per il confronto: forma canonica del tipo
 /// (uguale fra motori diversi) + nullabilità.
 fn logical_def(c: &Column) -> String {

@@ -271,15 +271,6 @@ pub fn clone(
     opts: &CloneOptions,
     dry: bool,
 ) -> OpResult {
-    if src.engine != dst.engine {
-        return OpResult {
-            ok: false,
-            method: Method::Native,
-            message: "sorgente e destinazione devono usare lo stesso motore di database".into(),
-            artifact: None,
-            log: Vec::new(),
-        };
-    }
     // Apre i tunnel SSH (se configurati) per sorgente e destinazione.
     let (src, _gs) = match prepare(src) {
         Ok(x) => x,
@@ -289,6 +280,16 @@ pub fn clone(
         Ok(x) => x,
         Err(e) => return early_error(e),
     };
+    // Motori diversi → migrazione cross-motore (best-effort, puro Rust). Le
+    // opzioni data-only/masking non sono supportate in questo percorso.
+    if src.engine != dst.engine {
+        if opts.data_only || opts.has_mask() {
+            return early_error(Error::Unsupported(
+                "data-only e mascheramento non sono disponibili nel clone cross-motore".into(),
+            ));
+        }
+        return cross_clone(&src, &dst, dry);
+    }
     // Il mascheramento riscrive i valori riga per riga: possibile solo col puro
     // Rust. Anche il data-only per SQL Server è implementato solo nel fallback puro
     // Rust (i tool nativi non lo gestiscono). In questi casi forziamo quel metodo a
@@ -417,6 +418,149 @@ pub fn compare(src: &Connection, dst: &Connection) -> Result<crate::compare::DbD
         let s = read_schema(&src)?;
         let d = read_schema(&dst)?;
         Ok(crate::schema::diff_schemas(&s, &d, conn_label(&src), conn_label(&dst)))
+    }
+}
+
+/// Letterale SQL di un valore (stringa grezza dal JSON di export) per il motore
+/// **target**, in base al tipo astratto della colonna. Cuore della conversione
+/// dati nella migrazione cross-motore.
+fn cross_literal(v: Option<&str>, ty: &crate::schema::AbstractType, target: Engine) -> String {
+    use crate::schema::AbstractType::*;
+    let s = match v {
+        None => return "NULL".into(),
+        Some(s) => s,
+    };
+    match ty {
+        Boolean => {
+            let truthy = matches!(s.to_ascii_lowercase().as_str(), "true" | "t" | "1" | "yes" | "y");
+            match target {
+                Engine::Postgres => if truthy { "true" } else { "false" }.into(),
+                _ => if truthy { "1" } else { "0" }.into(),
+            }
+        }
+        Integer { .. } | Decimal { .. } | Float { .. } => {
+            if s.trim().is_empty() { "NULL".into() } else { s.to_string() }
+        }
+        // Testo/data/uuid/json/binario: come stringa quotata (best-effort).
+        _ => format!("'{}'", s.replace('\'', "''")),
+    }
+}
+
+/// `DROP TABLE` idempotente nel dialetto target (dove supportato).
+fn drop_if_exists(engine: Engine, table: &str) -> String {
+    let q = crate::schema::quote_ident(engine, table);
+    match engine {
+        // Oracle < 23c non ha IF EXISTS: si conta sul continue-on-error dell'import.
+        Engine::Oracle => String::new(),
+        _ => format!("DROP TABLE IF EXISTS {q};\n"),
+    }
+}
+
+/// **Clone cross-motore** (migrazione best-effort): legge lo schema della
+/// sorgente nel modello neutro, esporta i dati in JSON temporaneo, genera
+/// CREATE TABLE + INSERT nel dialetto della destinazione e li esegue lì.
+/// Riusa read_schema + export + import: nessun percorso dati nuovo per motore.
+pub fn cross_clone(src: &Connection, dst: &Connection, dry: bool) -> OpResult {
+    let mut log = Vec::new();
+    note_dry(dry, &mut log);
+    crate::progress::note(
+        &mut log,
+        format!(
+            "Migrazione cross-motore {} → {} (best-effort)",
+            src.engine.label(),
+            dst.engine.label()
+        ),
+    );
+
+    let model = match read_schema(src) {
+        Ok(m) => m,
+        Err(e) => return early_error(e),
+    };
+    let tmpdir = std::env::temp_dir().join(format!("charon-xclone-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmpdir);
+    let files = match export_data(src, &tmpdir.display().to_string(), "json") {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmpdir);
+            return early_error(e);
+        }
+    };
+    let file_of: std::collections::HashMap<String, String> = files
+        .iter()
+        .filter_map(|f| {
+            std::path::Path::new(f)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|stem| (stem.to_string(), f.clone()))
+        })
+        .collect();
+
+    let mut script = String::new();
+    let mut nrows = 0usize;
+    for t in &model.tables {
+        script.push_str(&drop_if_exists(dst.engine, &t.name));
+        script.push_str(&crate::schema::create_table_ddl(t, dst.engine));
+        script.push('\n');
+        if let Some(path) = file_of.get(&t.name) {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if let Ok(serde_json::Value::Array(rows)) =
+                    serde_json::from_str::<serde_json::Value>(&text)
+                {
+                    let collist = t
+                        .columns
+                        .iter()
+                        .map(|c| crate::schema::quote_ident(dst.engine, &c.name))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let tname = crate::schema::quote_ident(dst.engine, &t.name);
+                    for row in &rows {
+                        let vals = t
+                            .columns
+                            .iter()
+                            .map(|c| {
+                                let v = row
+                                    .get(&c.name)
+                                    .and_then(|x| if x.is_null() { None } else { x.as_str() });
+                                cross_literal(v, &c.ty, dst.engine)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        script.push_str(&format!("INSERT INTO {tname} ({collist}) VALUES ({vals});\n"));
+                        nrows += 1;
+                    }
+                }
+            }
+        }
+        script.push('\n');
+    }
+    crate::progress::note(
+        &mut log,
+        format!("{} tabelle, {} righe da migrare", model.tables.len(), nrows),
+    );
+
+    if dry {
+        let _ = std::fs::remove_dir_all(&tmpdir);
+        crate::progress::note(&mut log, "Dry-run: destinazione non modificata.");
+        return OpResult::ok(Method::Rust, "Dry-run migrazione cross-motore", log);
+    }
+
+    let tmp = tmpdir.join("migrate.sql");
+    if let Err(e) = std::fs::write(&tmp, &script) {
+        let _ = std::fs::remove_dir_all(&tmpdir);
+        return early_error(Error::Io(e));
+    }
+    let mut res = import(dst, &tmp.display().to_string(), Prefer::Rust, false);
+    let _ = std::fs::remove_dir_all(&tmpdir);
+    let mut full = log;
+    full.append(&mut res.log);
+    OpResult {
+        message: if res.ok {
+            format!("Migrazione cross-motore completata ({nrows} righe)")
+        } else {
+            res.message
+        },
+        log: full,
+        ..res
     }
 }
 

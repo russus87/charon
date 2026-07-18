@@ -9,7 +9,7 @@
     dark: { icon: "☾", label: "Tema: scuro" },
   };
 
-  const VERSION = "0.2.1"; // versione app (allineata a Cargo/tauri.conf)
+  const VERSION = "0.3.0"; // versione app (allineata a Cargo/tauri.conf)
 
   // Voci di navigazione = le viste dell'app. Icone come path SVG 24×24.
   const nav = [
@@ -30,8 +30,10 @@
 
   const engines = [
     { id: "postgres", short: "PostgreSQL" },
+    { id: "mysql", short: "MySQL" },
     { id: "oracle", short: "Oracle" },
     { id: "sqlserver", short: "SQL Server" },
+    { id: "sqlite", short: "SQLite" },
   ];
 
   // Stato sintetico per il footer: verde = nativo, ambra = solo puro-Rust, off = niente.

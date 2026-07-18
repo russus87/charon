@@ -16,11 +16,46 @@
   let data = $state(null); // { columns, rows, truncated }
   let loadingData = $state(false);
   let dataErr = $state(null);
-  let filter = $state("");
+  let filter = $state(""); // filtro dell'elenco tabelle
+
+  // Filtro righe + ordinamento colonna (client-side, sulle righe già caricate).
+  let rowFilter = $state("");
+  let sortCol = $state(null); // indice colonna di ordinamento (o null)
+  let sortDir = $state("asc");
 
   let shownTables = $derived(
     (tables ?? []).filter((t) => !filter || t.name.toLowerCase().includes(filter.toLowerCase())),
   );
+
+  function toggleSort(i) {
+    if (sortCol === i) sortDir = sortDir === "asc" ? "desc" : "asc";
+    else {
+      sortCol = i;
+      sortDir = "asc";
+    }
+  }
+
+  // Confronto celle: NULL in fondo; numerico se entrambe sono numeri "puliti".
+  function cmpCells(a, b) {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    const na = Number(a);
+    const nb = Number(b);
+    if (!Number.isNaN(na) && !Number.isNaN(nb) && a.trim() !== "" && b.trim() !== "") return na - nb;
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+
+  let displayRows = $derived.by(() => {
+    let rs = data?.rows ?? [];
+    const f = rowFilter.trim().toLowerCase();
+    if (f) rs = rs.filter((r) => r.some((c) => c != null && String(c).toLowerCase().includes(f)));
+    if (sortCol != null) {
+      const dir = sortDir === "asc" ? 1 : -1;
+      rs = [...rs].sort((a, b) => cmpCells(a[sortCol], b[sortCol]) * dir);
+    }
+    return rs;
+  });
 
   async function loadTables() {
     if (!conn) return;
@@ -45,6 +80,9 @@
     loadingData = true;
     dataErr = null;
     data = null;
+    rowFilter = "";
+    sortCol = null;
+    sortDir = "asc";
     try {
       data = await previewTable($state.snapshot(conn), name, LIMIT);
     } catch (e) {
@@ -96,9 +134,11 @@
           <div class="dhead">
             <b class="dtitle">{selected}</b>
             <span class="dsub">
-              {data.rows.length} righ{data.rows.length === 1 ? "a" : "e"}
+              {displayRows.length}{#if rowFilter.trim()} / {data.rows.length}{/if}
+              righ{displayRows.length === 1 ? "a" : "e"}
               {#if data.truncated}<span class="badge grey">prime {LIMIT} · troncato</span>{/if}
             </span>
+            <input class="rowfilter" placeholder="Filtra righe…" bind:value={rowFilter} />
           </div>
           {#if data.rows.length === 0}
             <div class="hint">Tabella vuota.</div>
@@ -106,10 +146,18 @@
             <div class="grid-wrap">
               <table class="grid">
                 <thead>
-                  <tr><th class="rn">#</th>{#each data.columns as c}<th>{c}</th>{/each}</tr>
+                  <tr>
+                    <th class="rn">#</th>
+                    {#each data.columns as c, i}
+                      <th class="sortable" class:sorted={sortCol === i} onclick={() => toggleSort(i)}>
+                        {c}
+                        <span class="sarrow">{sortCol === i ? (sortDir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                      </th>
+                    {/each}
+                  </tr>
                 </thead>
                 <tbody>
-                  {#each data.rows as row, i}
+                  {#each displayRows as row, i}
                     <tr>
                       <td class="rn">{i + 1}</td>
                       {#each row as cell}
@@ -259,6 +307,36 @@
     gap: 8px;
     font-size: 12.5px;
     color: var(--text-dim);
+  }
+  .rowfilter {
+    margin-left: auto;
+    padding: 6px 10px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: var(--radius-sm);
+    font-size: 12.5px;
+    width: 200px;
+  }
+  .rowfilter:focus {
+    outline: none;
+    border-color: var(--green-500);
+  }
+  .grid th.sortable {
+    cursor: pointer;
+    user-select: none;
+  }
+  .grid th.sortable:hover {
+    color: var(--text);
+  }
+  .grid th .sarrow {
+    font-size: 9px;
+    opacity: 0.5;
+    margin-left: 4px;
+  }
+  .grid th.sorted .sarrow {
+    opacity: 1;
+    color: var(--accent);
   }
   .grid-wrap {
     overflow: auto;

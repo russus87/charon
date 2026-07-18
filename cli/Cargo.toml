@@ -4,7 +4,7 @@
 # il parsing degli argomenti è fatto a mano per massimizzare la portabilità.
 [package]
 name = "charon-cli"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "Charon CLI - dump/import/clone di database, con dry-run"
 license = "MIT"

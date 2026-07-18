@@ -1,6 +1,6 @@
 [package]
 name = "charon"
-version = "0.3.1"
+version = "0.3.2"
 description = "Charon - dump, import e clonazione di database (PostgreSQL, Oracle, SQL Server)"
 authors = ["Antonio Russo"]
 license = "MIT"

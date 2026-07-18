@@ -9,7 +9,7 @@
     dark: { icon: "☾", label: "Tema: scuro" },
   };
 
-  const VERSION = "0.3.1"; // versione app (allineata a Cargo/tauri.conf)
+  const VERSION = "0.3.2"; // versione app (allineata a Cargo/tauri.conf)
 
   // Voci di navigazione = le viste dell'app. Icone come path SVG 24×24.
   const nav = [

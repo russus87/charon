@@ -41,6 +41,13 @@ export const pickDirectory = () => open({ directory: true, multiple: false });
 export const exportDiff = (source, target, format, out) =>
   invoke("export_diff", { source, target, format, out });
 
+// Genera lo script di allineamento (DDL) dal diff di schema. Sola lettura.
+export const syncPlan = (source, target) => invoke("sync_plan", { source, target });
+
+// Applica lo script di allineamento alla destinazione (dryRun = anteprima).
+export const syncApply = (source, target, dryRun) =>
+  invoke("sync_apply", { source, target, dryRun });
+
 // Percorso di salvataggio per il report del confronto.
 export const pickReportPath = (format) =>
   save({

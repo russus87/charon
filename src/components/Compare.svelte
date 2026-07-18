@@ -1,6 +1,6 @@
 <script>
-  import { app, runCompare, rowsDiffer, tableAligned, connById } from "../lib/state.svelte.js";
-  import { exportDiff, pickReportPath, compareTableData } from "../lib/api.js";
+  import { app, runCompare, rowsDiffer, tableAligned, connById, requestSyncApply } from "../lib/state.svelte.js";
+  import { exportDiff, pickReportPath, compareTableData, syncPlan } from "../lib/api.js";
   import ConnPicker from "./ConnPicker.svelte";
 
   // Vista "Compare": diff fra due database, in stile git.
@@ -43,6 +43,25 @@
       dataDiffs[table] = await compareTableData($state.snapshot(src), $state.snapshot(dst), table);
     } catch (e) {
       dataDiffs[table] = { error: String(e) };
+    }
+  }
+
+  // --- Allineamento (sync): genera lo script DDL, poi applica con conferma ---
+  let syncScript = $state(null);
+  let syncing = $state(false);
+  let syncErr = $state(null);
+  async function generatePlan() {
+    const src = connById(app.sel.cmpSrc);
+    const dst = connById(app.sel.cmpDst);
+    if (!src || !dst) return;
+    syncing = true;
+    syncErr = null;
+    try {
+      syncScript = await syncPlan($state.snapshot(src), $state.snapshot(dst));
+    } catch (e) {
+      syncErr = String(e);
+    } finally {
+      syncing = false;
     }
   }
 
@@ -194,9 +213,37 @@
       </div>
 
       <p class="phase-note">
-        ⓘ Fase 1: il confronto mostra le differenze ma non le applica ancora. La
-        selezione di cosa portare da un lato all'altro arriva nella fase 2.
+        ⓘ Il data-diff e l'allineamento dello schema confrontano/generano; le DROP
+        nell'allineamento sono distruttive: lo script va sempre riletto.
       </p>
+
+      {#if diffCount > 0}
+        <div class="sync">
+          <div class="sync-head">
+            <div>
+              <b>Allineamento schema</b>
+              <span class="sync-sub">genera le DDL per portare la destinazione al livello della sorgente</span>
+            </div>
+            <button class="btn ghost sm" disabled={syncing} onclick={generatePlan}>
+              {syncing ? "Generazione…" : syncScript ? "Rigenera" : "Genera script"}
+            </button>
+          </div>
+
+          {#if syncErr}
+            <p class="sync-err">{syncErr}</p>
+          {/if}
+
+          {#if syncScript}
+            <pre class="sync-pre">{syncScript}</pre>
+            <div class="sync-actions">
+              <span class="warn-inline">⚠ Rileggi lo script: le DROP possono perdere dati.</span>
+              <button class="btn danger-solid sm" disabled={app.busy} onclick={requestSyncApply}>
+                Applica alla destinazione
+              </button>
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -472,6 +519,62 @@
     border-radius: 5px;
     background: var(--surface);
     border: 1px solid var(--border);
+  }
+  .sync {
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .sync-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .sync-sub {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    margin-left: 8px;
+  }
+  .sync-err {
+    margin: 0;
+    font-size: 13px;
+    color: var(--err);
+  }
+  .sync-pre {
+    margin: 0;
+    max-height: 320px;
+    overflow: auto;
+    background: #0e1220;
+    color: #cdd4e6;
+    border-radius: 10px;
+    padding: 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre;
+  }
+  .sync-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .warn-inline {
+    font-size: 12.5px;
+    color: var(--warn);
+  }
+  .btn.danger-solid {
+    background: var(--red);
+    border-color: var(--red);
+    color: #fff;
+  }
+  .btn.danger-solid:hover {
+    background: #bf3a30;
   }
   .phase-note {
     margin: 4px 0 0;

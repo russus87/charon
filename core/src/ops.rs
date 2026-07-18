@@ -440,6 +440,54 @@ pub fn compare_data(
     }
 }
 
+/// Genera lo **script di allineamento** (DDL) che porterebbe la destinazione a
+/// somigliare alla sorgente, dal diff di schema. **Sola lettura**: non modifica
+/// niente, serve per l'anteprima da rivedere prima di applicare.
+pub fn sync_plan(src: &Connection, dst: &Connection) -> Result<String> {
+    if src.engine != dst.engine {
+        return Err(Error::Unsupported(
+            "l'allineamento richiede due database dello stesso motore".into(),
+        ));
+    }
+    let diff = compare(src, dst)?;
+    Ok(crate::sync::sync_script(&diff, src.engine))
+}
+
+/// Genera lo script di allineamento e lo **applica** alla destinazione (o, con
+/// `dry`, mostra soltanto cosa verrebbe eseguito). L'esecuzione passa dal
+/// percorso import puro-Rust, statement per statement.
+pub fn sync_apply(src: &Connection, dst: &Connection, dry: bool) -> OpResult {
+    let script = match sync_plan(src, dst) {
+        Ok(s) => s,
+        Err(e) => return early_error(e),
+    };
+    // Niente DDL effettive (solo commenti/intestazione): non c'è nulla da fare.
+    let has_ddl = script
+        .lines()
+        .any(|l| !l.trim_start().starts_with("--") && !l.trim().is_empty());
+    if !has_ddl {
+        return OpResult::ok(
+            Method::Rust,
+            "Nessuna differenza di schema da applicare.",
+            vec!["Le due schemi risultano già allineati.".into()],
+        );
+    }
+    let tmp = std::env::temp_dir().join(format!("charon-sync-{}.sql", std::process::id()));
+    if let Err(e) = std::fs::write(&tmp, &script) {
+        return early_error(Error::Io(e));
+    }
+    let msg = if dry {
+        "Dry-run allineamento (destinazione non modificata)".into()
+    } else {
+        "Allineamento applicato alla destinazione".into()
+    };
+    // Forziamo il puro Rust: lo script è pensato per l'esecuzione statement-based.
+    let res = import(dst, &tmp.display().to_string(), Prefer::Rust, dry);
+    let _ = std::fs::remove_file(&tmp);
+    // Sostituiamo il messaggio generico dell'import con uno specifico dell'allineamento.
+    OpResult { message: if res.ok { msg } else { res.message }, ..res }
+}
+
 /// Esporta i **dati** di tutte le tabelle in `out_dir`, un file per tabella nel
 /// formato scelto ("csv" o "json"). Sola lettura. Ritorna i file scritti.
 pub fn export_data(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {

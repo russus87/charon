@@ -166,6 +166,27 @@ async fn compare_table_data(
     run_blocking_res(app, move || ops::compare_data(&source, &target, &table)).await
 }
 
+/// Genera lo script di allineamento (DDL) dal diff di schema. Sola lettura.
+#[tauri::command]
+async fn sync_plan(
+    app: AppHandle,
+    source: Connection,
+    target: Connection,
+) -> std::result::Result<String, String> {
+    run_blocking_res(app, move || ops::sync_plan(&source, &target)).await
+}
+
+/// Applica lo script di allineamento alla destinazione (con `dry_run`, anteprima).
+#[tauri::command]
+async fn sync_apply(
+    app: AppHandle,
+    source: Connection,
+    target: Connection,
+    dry_run: bool,
+) -> OpResult {
+    run_blocking(app, move || ops::sync_apply(&source, &target, dry_run)).await
+}
+
 /// Ri-esegue il confronto e scrive il report su file (`format`: "html" o "json").
 /// Sola lettura sui database.
 #[tauri::command]
@@ -226,6 +247,8 @@ pub fn run() {
             compare_table_data,
             export_data,
             export_diff,
+            sync_plan,
+            sync_apply,
             oracle_load,
             oracle_setup,
             list_connections,

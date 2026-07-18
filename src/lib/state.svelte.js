@@ -7,6 +7,7 @@ import {
   importDump,
   cloneDatabase,
   compareDatabases,
+  syncApply,
   listConnections,
   saveConnection,
   deleteConnection,
@@ -159,6 +160,35 @@ export const rowsDiffer = (t) =>
 
 // Una tabella è allineata se ha schema uguale e stesso numero di righe.
 export const tableAligned = (t) => t.status === "same" && !rowsDiffer(t);
+
+// Applica l'allineamento (schema) alla destinazione. Passa dal popup di conferma.
+const runSyncApply = () => {
+  const src = connById(app.sel.cmpSrc);
+  const dst = connById(app.sel.cmpDst);
+  if (!src || !dst) return needConn("Seleziona i due database.", "sync");
+  return withBusy(() => syncApply($state.snapshot(src), $state.snapshot(dst), false), "sync");
+};
+
+export function requestSyncApply() {
+  const src = connById(app.sel.cmpSrc);
+  const dst = connById(app.sel.cmpDst);
+  if (!src || !dst) return needConn("Seleziona i due database.", "sync");
+  app.confirm = {
+    title: "Applicare l'allineamento?",
+    cta: "Applica alla destinazione",
+    danger: true,
+    dry: false,
+    rows: [
+      { label: "Modello (sorgente)", value: `${engineLabel(src.engine)} · ${connTarget(src)}` },
+      { label: "Verrà modificata", value: `${engineLabel(dst.engine)} · ${connTarget(dst)}`, danger: true },
+    ],
+    notes: [
+      "Esegue le DDL di allineamento SULLA destinazione, statement per statement.",
+      "Le righe DROP possono perdere dati: rileggi lo script generato prima di procedere.",
+    ],
+  };
+  pendingRun = runSyncApply;
+}
 
 // Apre l'editor su una NUOVA connessione.
 export function newConnection() {
@@ -338,6 +368,7 @@ export const OP_TITLES = {
   dump: { ok: "Dump completato", err: "Dump non riuscito" },
   import: { ok: "Import completato", err: "Import non riuscito" },
   clone: { ok: "Clonazione completata", err: "Clonazione non riuscita" },
+  sync: { ok: "Allineamento applicato", err: "Allineamento non riuscito" },
 };
 
 export function closeResultModal() {

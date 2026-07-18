@@ -18,6 +18,7 @@
 
 pub mod compare;
 pub mod connections;
+pub mod export;
 pub mod model;
 pub mod mssql;
 pub mod mysql;

@@ -390,3 +390,57 @@ fn compare_rileva_tabelle_e_colonne_divergenti() {
         .expect("tabella libri assente dal diff");
     assert!(libri.rows_differ(), "conteggio righe di 'libri' non divergente");
 }
+
+/// Confronto dati riga-per-riga su 'autori' (chiave primaria 'id'): una riga
+/// resta identica, una viene modificata solo sulla destinazione e una viene
+/// aggiunta solo sulla destinazione. Il diff deve distinguere i tre casi.
+#[test]
+fn data_diff_rileva_righe_modificate_e_aggiunte() {
+    use charon_core::compare::Status;
+
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let src = seeded(d, "src", Prefer::Rust);
+    let dst = conn(&d.join("dst.db"));
+    ok(
+        ops::clone(&src, &dst, Prefer::Rust, &CloneOptions::default(), false),
+        "clone per data_diff",
+    );
+
+    // Appena clonati: dati identici.
+    let diff = charon_core::sqlite::rust_data_diff(&src, &dst, "autori").expect("data_diff (identici)");
+    assert_eq!(diff.key, vec!["id".to_string()], "chiave primaria non rilevata");
+    assert_eq!(diff.only_source, 0);
+    assert_eq!(diff.only_target, 0);
+    assert_eq!(diff.changed, 0);
+    assert_eq!(diff.same, 2, "le due righe seed devono risultare uguali");
+    assert!(diff.note.is_none());
+
+    // Modifica la riga id=2 e ne aggiunge una nuova (id=3), solo sulla dest.
+    let extra_sql = d.join("extra.sql");
+    write(
+        &extra_sql,
+        "UPDATE autori SET voto = 9.9 WHERE id = 2;\n\
+         INSERT INTO autori (id, nome, voto) VALUES (3, 'Leopardi', 6.0);\n",
+    );
+    ok(
+        ops::import(&dst, &extra_sql.display().to_string(), Prefer::Rust, false),
+        "import modifica+aggiunta",
+    );
+
+    let diff2 = charon_core::sqlite::rust_data_diff(&src, &dst, "autori").expect("data_diff (divergenti)");
+    assert_eq!(diff2.only_source, 0, "nessuna riga dovrebbe mancare in dst");
+    assert_eq!(diff2.only_target, 1, "la riga id=3 è solo in dst");
+    assert_eq!(diff2.changed, 1, "la riga id=2 è stata modificata");
+    assert_eq!(diff2.same, 1, "la riga id=1 resta identica");
+    assert!(
+        diff2.sample.iter().any(|r| r.key.contains("id=3") && r.kind == Status::OnlyTarget),
+        "campione senza la riga aggiunta: {:?}",
+        diff2.sample
+    );
+    assert!(
+        diff2.sample.iter().any(|r| r.key.contains("id=2") && r.kind == Status::Changed),
+        "campione senza la riga modificata: {:?}",
+        diff2.sample
+    );
+}

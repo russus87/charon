@@ -26,6 +26,10 @@ export const cloneDatabase = (source, target, prefer, options, dryRun) =>
 export const compareDatabases = (source, target) =>
   invoke("compare_databases", { source, target });
 
+// Confronto DATI (riga per riga, per chiave) di una singola tabella.
+export const compareTableData = (source, target, table) =>
+  invoke("compare_table_data", { source, target, table });
+
 // Ri-esegue il confronto e ne scrive il report su file (format: "html" | "json").
 export const exportDiff = (source, target, format, out) =>
   invoke("export_diff", { source, target, format, out });

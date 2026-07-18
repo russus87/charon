@@ -8,7 +8,7 @@
 //!   che richiede l'Oracle Instant Client in fase di link (non nelle build CI).
 //!   Senza di essa, per Oracle servono i tool nativi.
 
-use crate::compare::{ColumnDiff, DbDiff, Status, TableDiff};
+use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
@@ -904,6 +904,21 @@ pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
     }
 }
 
+/// Confronto DATI riga-per-riga di una tabella Oracle: righe accoppiate per
+/// chiave primaria (o per riga intera in assenza di PK), classificate come
+/// solo-sorgente / solo-destinazione / cambiate / uguali.
+pub fn rust_data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
+    #[cfg(feature = "oracle-driver")]
+    {
+        return rustimpl::data_diff(src, dst, table);
+    }
+    #[cfg(not(feature = "oracle-driver"))]
+    {
+        let _ = (src, dst, table);
+        Err(no_driver())
+    }
+}
+
 pub fn rust_test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {
     #[cfg(feature = "oracle-driver")]
     {
@@ -1152,6 +1167,162 @@ mod rustimpl {
             log,
         };
         Ok(diff)
+    }
+
+    // --------------------------------------------------------------- dati ---
+
+    /// Colonne che compongono la chiave primaria della tabella, nell'ordine di
+    /// posizione. Vuoto se la tabella non ha vincolo PK.
+    fn primary_key_cols(c: &oracle::Connection, table: &str) -> Result<Vec<String>> {
+        let rows = c
+            .query(
+                "SELECT cc.column_name FROM user_constraints c \
+                 JOIN user_cons_columns cc ON cc.constraint_name = c.constraint_name \
+                 WHERE c.constraint_type = 'P' AND c.table_name = :1 ORDER BY cc.position",
+                &[&table],
+            )
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            let r = r.map_err(|e| Error::Msg(e.to_string()))?;
+            out.push(r.get::<usize, String>(0).map_err(|e| Error::Msg(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Legge tutte le righe di una tabella e le indicizza per chiave: la mappa
+    /// associa la chiave "cruda" (valori delle colonne-chiave uniti da un
+    /// separatore di controllo, per evitare ambiguità con valori che
+    /// contengono ", ") alla coppia (rappresentazione delle colonne non-chiave,
+    /// chiave leggibile "col=val, col=val" per il campione mostrato in UI).
+    /// Se `key_cols` copre tutte le colonne (nessuna PK), la parte "valore" è
+    /// vuota: si confronta l'intera riga come chiave.
+    fn read_keyed_rows(
+        c: &oracle::Connection,
+        table: &str,
+        all_cols: &[Col],
+        key_names: &[String],
+    ) -> Result<std::collections::HashMap<String, (String, String)>> {
+        let sel = select_list(all_cols);
+        let rows = c
+            .query(&format!("SELECT {sel} FROM \"{table}\""), &[])
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let key_idx: Vec<usize> = key_names
+            .iter()
+            .filter_map(|k| all_cols.iter().position(|c| &c.name == k))
+            .collect();
+
+        let mut map = std::collections::HashMap::new();
+        for r in rows {
+            let r = r.map_err(|e| Error::Msg(e.to_string()))?;
+            let mut vals = Vec::with_capacity(all_cols.len());
+            for i in 0..all_cols.len() {
+                let v = r
+                    .get::<usize, Option<String>>(i)
+                    .map_err(|e| Error::Msg(e.to_string()))?;
+                // Marcatore di controllo per NULL, distinto da qualunque valore reale.
+                vals.push(v.unwrap_or_else(|| "\u{2}".into()));
+            }
+            let key_str = key_idx
+                .iter()
+                .map(|&i| vals[i].as_str())
+                .collect::<Vec<_>>()
+                .join("\u{1}");
+            let key_display = key_idx
+                .iter()
+                .map(|&i| format!("{}={}", all_cols[i].name, vals[i]))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let val_str = (0..all_cols.len())
+                .filter(|i| !key_idx.contains(i))
+                .map(|i| vals[i].as_str())
+                .collect::<Vec<_>>()
+                .join("\u{1}");
+            map.insert(key_str, (val_str, key_display));
+        }
+        Ok(map)
+    }
+
+    /// Confronto DATI riga-per-riga di una tabella: righe accoppiate per
+    /// chiave primaria (o per riga intera in assenza di PK), classificate
+    /// come solo-sorgente / solo-destinazione / cambiate / uguali.
+    pub fn data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
+        let s = connect(src)?;
+        let d = connect(dst)?;
+
+        // La tabella in user_tables e' in MAIUSCOLO: usiamo il nome cosi' com'e'
+        // arrivato (il chiamante lo prende dalla lista tabelle, gia' coerente).
+        let all_cols = columns(&s, table)?;
+        if all_cols.is_empty() {
+            return Err(Error::Msg(format!(
+                "tabella '{table}' non trovata o senza colonne leggibili"
+            )));
+        }
+
+        let pk_cols = primary_key_cols(&s, table)?;
+        let no_pk = pk_cols.is_empty();
+        let (key_names, note) = if no_pk {
+            // Nessuna chiave primaria: la riga intera fa da chiave, e non resta
+            // nulla da confrontare come "valore".
+            (
+                all_cols.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+                Some("nessuna chiave primaria: confronto per riga intera".to_string()),
+            )
+        } else {
+            (pk_cols, None)
+        };
+
+        let smap = read_keyed_rows(&s, table, &all_cols, &key_names)?;
+        let dmap = read_keyed_rows(&d, table, &all_cols, &key_names)?;
+
+        let mut only_source = 0i64;
+        let mut only_target = 0i64;
+        let mut changed = 0i64;
+        let mut same = 0i64;
+        let mut sample = Vec::new();
+
+        for (k, (sval, kdisp)) in &smap {
+            match dmap.get(k) {
+                None => {
+                    only_source += 1;
+                    if sample.len() < 50 {
+                        sample.push(RowDelta { key: kdisp.clone(), kind: Status::OnlySource });
+                    }
+                }
+                Some((dval, _)) => {
+                    if dval == sval {
+                        same += 1;
+                    } else {
+                        changed += 1;
+                        if sample.len() < 50 {
+                            sample.push(RowDelta { key: kdisp.clone(), kind: Status::Changed });
+                        }
+                    }
+                }
+            }
+        }
+        for (k, (_, kdisp)) in &dmap {
+            if !smap.contains_key(k) {
+                only_target += 1;
+                if sample.len() < 50 {
+                    sample.push(RowDelta { key: kdisp.clone(), kind: Status::OnlyTarget });
+                }
+            }
+        }
+
+        Ok(TableDataDiff {
+            table: table.to_string(),
+            // Coerente col contratto in compare.rs: vuoto se si e' confrontata
+            // la riga intera (key_names qui contiene tutte le colonne, usate
+            // solo internamente per l'hashing).
+            key: if no_pk { Vec::new() } else { key_names },
+            only_source,
+            only_target,
+            changed,
+            same,
+            sample,
+            note,
+        })
     }
 
     /// Tipo da usare in CREATE TABLE (target Oracle: riusa il tipo originale).

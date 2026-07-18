@@ -4,7 +4,7 @@
 //! - **Puro Rust** (`pg-driver`): si connette con `tokio-postgres` e genera un
 //!   dump SQL best-effort (schema essenziale + dati come INSERT), reimportabile.
 
-use crate::compare::{ColumnDiff, DbDiff, Status, TableDiff};
+use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
@@ -348,6 +348,26 @@ pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
     #[cfg(not(feature = "pg-driver"))]
     {
         let _ = (src, dst);
+        Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
+    }
+}
+
+/// Confronta i **dati** di una tabella riga per riga (per chiave primaria, o
+/// per riga intera se la tabella non ne ha una): a differenza di `rust_compare`,
+/// che si ferma al conteggio, distingue righe aggiunte, rimosse e modificate.
+/// Stesso pattern delle altre `rust_*`: runtime tokio dedicato + `block_on`.
+pub fn rust_data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
+    #[cfg(feature = "pg-driver")]
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| Error::Msg(format!("runtime tokio: {e}")))?;
+        return rt.block_on(rustimpl::data_diff(src, dst, table));
+    }
+    #[cfg(not(feature = "pg-driver"))]
+    {
+        let _ = (src, dst, table);
         Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
     }
 }
@@ -946,6 +966,147 @@ mod rustimpl {
             source_label: label(src),
             target_label: label(dst),
             log,
+        })
+    }
+
+    // -------------------------------------------------------- data_diff ---
+
+    /// Legge tutte le righe di una tabella (`to_json`, come `dump_sql`) e le
+    /// indicizza per chiave: `key_str` → (`val_str`, etichetta leggibile).
+    /// Con PK: `key_str`/`val_str` sono le colonne chiave/non-chiave concatenate
+    /// (separatore `\u{1}`, non presente in JSON testuale, quindi non ambiguo).
+    /// Senza PK: la chiave è la riga intera in JSON e `val_str` resta vuoto.
+    async fn load_data_rows(
+        client: &tokio_postgres::Client,
+        table: &str,
+        key_cols: &[String],
+        non_key_cols: &[String],
+        has_pk: bool,
+    ) -> Result<HashMap<String, (String, String)>> {
+        let rows = client
+            .query(format!("SELECT to_json(t) FROM \"{table}\" t").as_str(), &[])
+            .await
+            .map_err(perr)?;
+        let mut map = HashMap::new();
+        for r in &rows {
+            let row_json: Value = r.get(0);
+            let get = |c: &str| row_json.get(c).cloned().unwrap_or(Value::Null);
+            let (key_str, val_str, label) = if has_pk {
+                let key_str = key_cols
+                    .iter()
+                    .map(|c| get(c).to_string())
+                    .collect::<Vec<_>>()
+                    .join("\u{1}");
+                let val_str = non_key_cols
+                    .iter()
+                    .map(|c| get(c).to_string())
+                    .collect::<Vec<_>>()
+                    .join("\u{1}");
+                let label = key_cols
+                    .iter()
+                    .map(|c| format!("{}={}", c, value_repr(&get(c))))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (key_str, val_str, label)
+            } else {
+                let full = row_json.to_string();
+                // Etichetta accorciata per non far esplodere la UI su righe larghe.
+                let label = if full.chars().count() > 80 {
+                    format!("{}…", full.chars().take(80).collect::<String>())
+                } else {
+                    full.clone()
+                };
+                (full, String::new(), label)
+            };
+            map.insert(key_str, (val_str, label));
+        }
+        Ok(map)
+    }
+
+    /// Confronta i dati di una tabella riga per riga fra sorgente e destinazione,
+    /// per chiave primaria (o, in assenza, per riga intera): un conteggio di
+    /// righe uguale non implica dati uguali, questo diff chiude il falso negativo.
+    pub async fn data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
+        let s = connect(src).await?;
+        let d = connect(dst).await?;
+
+        // Colonne della chiave primaria, nell'ordine dell'indice.
+        let pk_rows = s
+            .query(
+                "SELECT a.attname FROM pg_index i \
+                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) \
+                 WHERE i.indrelid = format('public.%I', $1::text)::regclass AND i.indisprimary \
+                 ORDER BY array_position(i.indkey, a.attnum)",
+                &[&table],
+            )
+            .await
+            .map_err(perr)?;
+        let mut key_cols: Vec<String> = pk_rows.iter().map(|r| r.get::<_, String>(0)).collect();
+
+        let all_cols: Vec<String> = column_defs(&s, table)
+            .await?
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+
+        let note = if key_cols.is_empty() {
+            // Nessuna PK: la chiave diventa la riga intera (tutte le colonne).
+            key_cols = all_cols.clone();
+            Some("nessuna chiave primaria: confronto per riga intera".into())
+        } else {
+            None
+        };
+        let has_pk = note.is_none();
+        let non_key_cols: Vec<String> = all_cols
+            .iter()
+            .filter(|c| !key_cols.contains(c))
+            .cloned()
+            .collect();
+
+        let smap = load_data_rows(&s, table, &key_cols, &non_key_cols, has_pk).await?;
+        let dmap = load_data_rows(&d, table, &key_cols, &non_key_cols, has_pk).await?;
+
+        let mut only_source = 0i64;
+        let mut only_target = 0i64;
+        let mut changed = 0i64;
+        let mut same = 0i64;
+        let mut sample = Vec::new();
+
+        for (k, (v, label)) in &smap {
+            match dmap.get(k) {
+                None => {
+                    only_source += 1;
+                    if sample.len() < 50 {
+                        sample.push(RowDelta { key: label.clone(), kind: Status::OnlySource });
+                    }
+                }
+                Some((dv, _)) if dv != v => {
+                    changed += 1;
+                    if sample.len() < 50 {
+                        sample.push(RowDelta { key: label.clone(), kind: Status::Changed });
+                    }
+                }
+                _ => same += 1,
+            }
+        }
+        for (k, (_, label)) in &dmap {
+            if !smap.contains_key(k) {
+                only_target += 1;
+                if sample.len() < 50 {
+                    sample.push(RowDelta { key: label.clone(), kind: Status::OnlyTarget });
+                }
+            }
+        }
+
+        Ok(TableDataDiff {
+            table: table.into(),
+            key: if has_pk { key_cols } else { Vec::new() },
+            only_source,
+            only_target,
+            changed,
+            same,
+            sample,
+            note,
         })
     }
 }

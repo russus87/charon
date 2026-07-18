@@ -5,7 +5,7 @@
 //! - **Puro Rust** (`mssql-driver`): driver TDS `tiberius`, dump best-effort via
 //!   `FOR JSON` e import eseguendo i batch separati da `GO`.
 
-use crate::compare::{ColumnDiff, DbDiff, Status, TableDiff};
+use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
@@ -269,6 +269,21 @@ pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
     }
 }
 
+/// Confronta i **dati** di una singola tabella fra sorgente e destinazione,
+/// riga per riga (per chiave primaria, o per riga intera in sua assenza).
+/// `table` è nel formato `schema.tabella`, come lo produce [`rust_compare`].
+pub fn rust_data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
+    #[cfg(feature = "mssql-driver")]
+    {
+        return rustimpl::runtime()?.block_on(rustimpl::data_diff(src, dst, table));
+    }
+    #[cfg(not(feature = "mssql-driver"))]
+    {
+        let _ = (src, dst, table);
+        Err(Error::Unsupported("fallback SQL Server non disponibile in questa build".into()))
+    }
+}
+
 #[cfg(feature = "mssql-driver")]
 mod rustimpl {
     use super::*;
@@ -523,6 +538,147 @@ mod rustimpl {
             source_label: format!("{}:{}/{}", src.host, src.port, src.database),
             target_label: format!("{}:{}/{}", dst.host, dst.port, dst.database),
             log,
+        })
+    }
+
+    /// Confronta i dati di `schema.tabella` fra sorgente e destinazione, riga
+    /// per riga. Usa la chiave primaria se presente (stessa query su
+    /// `sys.indexes`/`sys.index_columns` di `dump_sql`); altrimenti confronta
+    /// la riga intera (nessuna chiave = ogni riga è la propria chiave).
+    pub async fn data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
+        let (schema, name) = table.split_once('.').unwrap_or(("dbo", table));
+        let full = format!("[{schema}].[{name}]");
+
+        let mut sc = connect(src).await?;
+        let mut dc = connect(dst).await?;
+
+        // Colonne chiave: la PK (se esiste) letta dal lato sorgente. Assumiamo
+        // che, se le due tabelle sono davvero "la stessa tabella", la PK sia
+        // la stessa da entrambe le parti.
+        let pk_rows = query(
+            &mut sc,
+            &format!(
+                "SELECT c.name FROM sys.indexes i \
+                 JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
+                 JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
+                 WHERE i.is_primary_key = 1 AND i.object_id = OBJECT_ID('{full}') \
+                 ORDER BY ic.key_ordinal"
+            ),
+        )
+        .await?;
+        let key_cols: Vec<String> = pk_rows.iter().map(|r| s(r, 0)).collect();
+        let note = if key_cols.is_empty() {
+            Some("nessuna chiave primaria: confronto per riga intera".into())
+        } else {
+            None
+        };
+
+        // Legge tutte le righe di un lato come mappa key_str -> val_str.
+        async fn rows_map(client: &mut Conn, full: &str, key_cols: &[String]) -> Result<std::collections::HashMap<String, String>> {
+            let json_rows = query(
+                client,
+                &format!("SELECT * FROM {full} FOR JSON PATH, INCLUDE_NULL_VALUES"),
+            )
+            .await?;
+            let mut json = String::new();
+            for r in &json_rows {
+                json.push_str(&s(r, 0));
+            }
+            let mut out = std::collections::HashMap::new();
+            if json.trim().is_empty() {
+                return Ok(out);
+            }
+            let parsed: Value = serde_json::from_str(&json).map_err(|e| Error::Msg(e.to_string()))?;
+            if let Value::Array(items) = parsed {
+                for item in items {
+                    if let Value::Object(map) = &item {
+                        if key_cols.is_empty() {
+                            // Nessuna PK: la riga intera è la chiave, nessun valore da confrontare a parte.
+                            out.insert(item.to_string(), String::new());
+                        } else {
+                            let key_str = key_cols
+                                .iter()
+                                .map(|k| map.get(k).unwrap_or(&Value::Null).to_string())
+                                .collect::<Vec<_>>()
+                                .join("\u{1}");
+                            let val_str = map
+                                .iter()
+                                .filter(|(k, _)| !key_cols.contains(k))
+                                .map(|(_, v)| v.to_string())
+                                .collect::<Vec<_>>()
+                                .join("\u{1}");
+                            out.insert(key_str, val_str);
+                        }
+                    }
+                }
+            }
+            Ok(out)
+        }
+
+        let smap = rows_map(&mut sc, &full, &key_cols).await?;
+        let dmap = rows_map(&mut dc, &full, &key_cols).await?;
+
+        let mut only_source = 0i64;
+        let mut only_target = 0i64;
+        let mut changed = 0i64;
+        let mut same = 0i64;
+        let mut sample: Vec<RowDelta> = Vec::new();
+
+        // Rende leggibile la chiave per il campione: "col=val, col2=val2" quando
+        // c'è una PK, altrimenti la riga intera troncata.
+        let key_label = |key_str: &str| -> String {
+            if key_cols.is_empty() {
+                let mut s = key_str.to_string();
+                if s.len() > 120 {
+                    s.truncate(120);
+                    s.push('…');
+                }
+                s
+            } else {
+                key_cols
+                    .iter()
+                    .zip(key_str.split('\u{1}'))
+                    .map(|(c, v)| format!("{c}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        };
+
+        for (k, sv) in &smap {
+            match dmap.get(k) {
+                None => {
+                    only_source += 1;
+                    if sample.len() < 50 {
+                        sample.push(RowDelta { key: key_label(k), kind: Status::OnlySource });
+                    }
+                }
+                Some(dv) if dv != sv => {
+                    changed += 1;
+                    if sample.len() < 50 {
+                        sample.push(RowDelta { key: key_label(k), kind: Status::Changed });
+                    }
+                }
+                Some(_) => same += 1,
+            }
+        }
+        for k in dmap.keys() {
+            if !smap.contains_key(k) {
+                only_target += 1;
+                if sample.len() < 50 {
+                    sample.push(RowDelta { key: key_label(k), kind: Status::OnlyTarget });
+                }
+            }
+        }
+
+        Ok(TableDataDiff {
+            table: table.into(),
+            key: key_cols,
+            only_source,
+            only_target,
+            changed,
+            same,
+            sample,
+            note,
         })
     }
 

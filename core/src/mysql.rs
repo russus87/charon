@@ -7,7 +7,7 @@
 //!   schema con `SHOW CREATE TABLE` (DDL originale del server) e i dati come
 //!   `INSERT`.
 
-use crate::compare::{ColumnDiff, DbDiff, Status, TableDiff};
+use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
@@ -270,11 +270,26 @@ pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
     }
 }
 
+/// Confronta i dati di una singola tabella riga per riga (per chiave primaria,
+/// o per riga intera se la tabella non ne ha una). Sincrona come `rust_compare`.
+pub fn rust_data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
+    #[cfg(feature = "mysql-driver")]
+    {
+        return rustimpl::data_diff(src, dst, table);
+    }
+    #[cfg(not(feature = "mysql-driver"))]
+    {
+        let _ = (src, dst, table);
+        Err(no_driver())
+    }
+}
+
 #[cfg(feature = "mysql-driver")]
 mod rustimpl {
     use super::*;
     use mysql::prelude::Queryable;
     use mysql::{Conn, OptsBuilder, Value};
+    use std::collections::HashMap;
 
     fn connect(conn: &Connection) -> Result<Conn> {
         let opts = OptsBuilder::default()
@@ -489,6 +504,148 @@ mod rustimpl {
             source_label: format!("{}:{}/{}", src.host, src.port, src.database),
             target_label: format!("{}:{}/{}", dst.host, dst.port, dst.database),
             log,
+        })
+    }
+
+    // -------------------------------------------------------------- dati ---
+
+    /// Legge tutte le righe di una tabella e le indicizza per chiave: la mappa
+    /// associa la chiave "cruda" (valori delle colonne-chiave uniti da un
+    /// separatore di controllo, per evitare ambiguità con valori che
+    /// contengono ", ") a una coppia (rappresentazione delle colonne non-chiave,
+    /// chiave leggibile "col=val, col=val" per il campione mostrato in UI).
+    fn read_keyed_rows(
+        client: &mut Conn,
+        table: &str,
+        key_cols: &[String],
+    ) -> Result<HashMap<String, (String, String)>> {
+        let qr = client
+            .query_iter(format!("SELECT * FROM `{table}`"))
+            .map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+        let col_names: Vec<String> = qr
+            .columns()
+            .as_ref()
+            .iter()
+            .map(|c| c.name_str().into_owned())
+            .collect();
+        // Indici delle colonne-chiave nell'ordine con cui compaiono nel resultset.
+        let key_idx: Vec<usize> = key_cols
+            .iter()
+            .filter_map(|k| col_names.iter().position(|c| c == k))
+            .collect();
+
+        let mut map = HashMap::new();
+        for row in qr {
+            let row = row.map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+            let mut vals = Vec::with_capacity(row.len());
+            for i in 0..row.len() {
+                let v = row.as_ref(i).cloned().unwrap_or(Value::NULL);
+                vals.push(lit(&v));
+            }
+            let key_str = key_idx
+                .iter()
+                .map(|&i| vals[i].as_str())
+                .collect::<Vec<_>>()
+                .join("\u{1}");
+            let key_display = key_idx
+                .iter()
+                .map(|&i| format!("{}={}", col_names[i], vals[i]))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let val_str = col_names
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !key_idx.contains(i))
+                .map(|(i, _)| vals[i].as_str())
+                .collect::<Vec<_>>()
+                .join("\u{1}");
+            map.insert(key_str, (val_str, key_display));
+        }
+        Ok(map)
+    }
+
+    /// Confronto dati riga-per-riga di una tabella: righe accoppiate per
+    /// chiave primaria (o per riga intera in assenza di PK), classificate
+    /// come solo-sorgente / solo-destinazione / cambiate / uguali.
+    pub fn data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
+        let mut sc = connect(src)?;
+        let mut dc = connect(dst)?;
+
+        // Colonne della chiave primaria, nell'ordine dichiarato.
+        let mut key_cols: Vec<String> = sc
+            .query(format!(
+                "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE \
+                 WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}' AND CONSTRAINT_NAME = 'PRIMARY' \
+                 ORDER BY ORDINAL_POSITION",
+                esc(&src.database),
+                esc(table)
+            ))
+            .map_err(|e| Error::Msg(e.to_string()))?;
+
+        let no_pk = key_cols.is_empty();
+        let note = if no_pk {
+            // Nessuna chiave primaria: si confronta la riga intera (tutte le
+            // colonne diventano "chiave" e non resta nulla da confrontare come
+            // "valore").
+            key_cols = columns_def(&mut sc, &src.database, table)?
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect();
+            Some("nessuna chiave primaria: confronto per riga intera".to_string())
+        } else {
+            None
+        };
+
+        let smap = read_keyed_rows(&mut sc, table, &key_cols)?;
+        let dmap = read_keyed_rows(&mut dc, table, &key_cols)?;
+
+        let mut only_source = 0i64;
+        let mut only_target = 0i64;
+        let mut changed = 0i64;
+        let mut same = 0i64;
+        let mut sample = Vec::new();
+
+        for (k, (sval, kdisp)) in &smap {
+            match dmap.get(k) {
+                None => {
+                    only_source += 1;
+                    if sample.len() < 50 {
+                        sample.push(RowDelta { key: kdisp.clone(), kind: Status::OnlySource });
+                    }
+                }
+                Some((dval, _)) => {
+                    if dval == sval {
+                        same += 1;
+                    } else {
+                        changed += 1;
+                        if sample.len() < 50 {
+                            sample.push(RowDelta { key: kdisp.clone(), kind: Status::Changed });
+                        }
+                    }
+                }
+            }
+        }
+        for (k, (_, kdisp)) in &dmap {
+            if !smap.contains_key(k) {
+                only_target += 1;
+                if sample.len() < 50 {
+                    sample.push(RowDelta { key: kdisp.clone(), kind: Status::OnlyTarget });
+                }
+            }
+        }
+
+        Ok(TableDataDiff {
+            table: table.to_string(),
+            // Coerente col contratto in compare.rs: vuoto se si è confrontata
+            // la riga intera (key_cols qui contiene tutte le colonne, usate
+            // solo internamente per l'hashing).
+            key: if no_pk { Vec::new() } else { key_cols },
+            only_source,
+            only_target,
+            changed,
+            same,
+            sample,
+            note,
         })
     }
 

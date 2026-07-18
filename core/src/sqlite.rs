@@ -11,7 +11,7 @@
 //!   il DDL originale in `sqlite_master`, quindi lo riusiamo così com'è invece
 //!   di ricostruire i tipi. I BLOB diventano letterali `X'..'`.
 
-use crate::compare::{ColumnDiff, DbDiff, Status, TableDiff};
+use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
 use crate::tools::{find_tool, has_tool};
 use crate::{Error, Result};
@@ -315,11 +315,26 @@ pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
     }
 }
 
+/// Confronta i **dati** di una tabella riga-per-riga (per chiave primaria, o
+/// per riga intera in assenza di chiave). Sincrona come `rust_compare`.
+pub fn rust_data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
+    #[cfg(feature = "sqlite-driver")]
+    {
+        return rustimpl::data_diff(src, dst, table);
+    }
+    #[cfg(not(feature = "sqlite-driver"))]
+    {
+        let _ = (src, dst, table);
+        Err(no_driver())
+    }
+}
+
 #[cfg(feature = "sqlite-driver")]
 mod rustimpl {
     use super::*;
     use rusqlite::types::ValueRef;
     use rusqlite::{Connection as Sql, OpenFlags};
+    use std::collections::HashMap;
 
     fn open_ro(path: &str) -> Result<Sql> {
         Sql::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -528,6 +543,153 @@ mod rustimpl {
             log,
         };
         Ok(diff)
+    }
+
+    // ---------------------------------------------------------- data_diff ---
+
+    /// Colonne che compongono la chiave primaria di una tabella, nell'ordine
+    /// della chiave composta (`PRAGMA table_info`, colonna `pk`: 0 = non chiave,
+    /// altrimenti la posizione 1-based nella chiave).
+    fn pk_columns(c: &Sql, table: &str) -> Result<Vec<String>> {
+        let mut st = c
+            .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let rows = st
+            .query_map([], |r| {
+                let name: String = r.get(1)?;
+                let pk: i64 = r.get(5)?;
+                Ok((pk, name))
+            })
+            .map_err(|e| Error::Msg(e.to_string()))?;
+        let mut pairs = Vec::new();
+        for r in rows {
+            let (pk, name) = r.map_err(|e| Error::Msg(e.to_string()))?;
+            if pk > 0 {
+                pairs.push((pk, name));
+            }
+        }
+        pairs.sort_by_key(|(pk, _)| *pk);
+        Ok(pairs.into_iter().map(|(_, name)| name).collect())
+    }
+
+    /// Legge tutte le righe di una tabella, indicizzate per chiave. Se `pk` è
+    /// vuoto si confronta la riga intera: la "chiave" diventa tutta la riga e
+    /// non resta nulla per la parte "valore" (val_str vuota, come da spec).
+    ///
+    /// Ritorna una mappa `key_str -> (val_str, display)`:
+    /// - `key_str`/`val_str` sono i letterali delle colonne unite da `\u{1}`,
+    ///   usati solo per il confronto (separatore che non compare nei dati veri);
+    /// - `display` è la forma leggibile `col=val, col2=val2` per il campione UI.
+    fn read_rows(c: &Sql, table: &str, pk: &[String]) -> Result<HashMap<String, (String, String)>> {
+        let mut st = c
+            .prepare(&format!("SELECT * FROM \"{table}\""))
+            .map_err(|e| Error::Msg(format!("{table}: {e}")))?;
+        let colnames: Vec<String> = st.column_names().into_iter().map(|s| s.to_string()).collect();
+        let ncol = colnames.len();
+        let whole_row = pk.is_empty();
+        let key_idx: Vec<usize> = if whole_row {
+            (0..ncol).collect()
+        } else {
+            pk.iter()
+                .filter_map(|k| colnames.iter().position(|c| c == k))
+                .collect()
+        };
+
+        let mut rows = st.query([]).map_err(|e| Error::Msg(e.to_string()))?;
+        let mut map = HashMap::new();
+        while let Some(r) = rows.next().map_err(|e| Error::Msg(e.to_string()))? {
+            let mut key_parts = Vec::with_capacity(key_idx.len());
+            let mut display_parts = Vec::with_capacity(key_idx.len());
+            let mut val_parts = Vec::new();
+            for i in 0..ncol {
+                let rendered = lit(r.get_ref(i).map_err(|e| Error::Msg(e.to_string()))?);
+                if key_idx.contains(&i) {
+                    display_parts.push(format!("{}={}", colnames[i], rendered));
+                    key_parts.push(rendered);
+                } else {
+                    val_parts.push(rendered);
+                }
+            }
+            let key_str = key_parts.join("\u{1}");
+            let val_str = val_parts.join("\u{1}");
+            let display = display_parts.join(", ");
+            map.insert(key_str, (val_str, display));
+        }
+        Ok(map)
+    }
+
+    /// Confronta i dati di una tabella riga per riga fra sorgente e destinazione.
+    pub fn data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
+        let s = open_ro(db_path(src))?;
+        let d = open_ro(db_path(dst))?;
+
+        let pk = pk_columns(&s, table)?;
+        let note = if pk.is_empty() {
+            Some("nessuna chiave primaria: confronto per riga intera".to_string())
+        } else {
+            None
+        };
+
+        // Per il confronto per riga intera usiamo tutte le colonne come chiave
+        // (nessuna colonna "valore" resta fuori); `read_rows` gestisce già
+        // questo caso quando riceve `pk` vuoto.
+        let rows_s = read_rows(&s, table, &pk)?;
+        let rows_d = read_rows(&d, table, &pk)?;
+
+        let mut only_source = 0i64;
+        let mut only_target = 0i64;
+        let mut changed = 0i64;
+        let mut same = 0i64;
+        let mut sample = Vec::new();
+
+        for (k, (v, disp)) in &rows_s {
+            match rows_d.get(k) {
+                None => {
+                    only_source += 1;
+                    if sample.len() < 50 {
+                        sample.push(RowDelta {
+                            key: disp.clone(),
+                            kind: Status::OnlySource,
+                        });
+                    }
+                }
+                Some((v2, _)) => {
+                    if v2 != v {
+                        changed += 1;
+                        if sample.len() < 50 {
+                            sample.push(RowDelta {
+                                key: disp.clone(),
+                                kind: Status::Changed,
+                            });
+                        }
+                    } else {
+                        same += 1;
+                    }
+                }
+            }
+        }
+        for (k, (_, disp)) in &rows_d {
+            if !rows_s.contains_key(k) {
+                only_target += 1;
+                if sample.len() < 50 {
+                    sample.push(RowDelta {
+                        key: disp.clone(),
+                        kind: Status::OnlyTarget,
+                    });
+                }
+            }
+        }
+
+        Ok(TableDataDiff {
+            table: table.to_string(),
+            key: pk,
+            only_source,
+            only_target,
+            changed,
+            same,
+            sample,
+            note,
+        })
     }
 
     /// Genera il dump completo: schema (DDL originale) + dati + indici/trigger/viste.

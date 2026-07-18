@@ -142,6 +142,18 @@ async fn compare_databases(
     run_blocking_res(app, move || ops::compare(&source, &target)).await
 }
 
+/// Confronto DATI (riga per riga, per chiave primaria) di una singola tabella.
+/// Sola lettura, eseguito su richiesta.
+#[tauri::command]
+async fn compare_table_data(
+    app: AppHandle,
+    source: Connection,
+    target: Connection,
+    table: String,
+) -> std::result::Result<charon_core::compare::TableDataDiff, String> {
+    run_blocking_res(app, move || ops::compare_data(&source, &target, &table)).await
+}
+
 /// Ri-esegue il confronto e scrive il report su file (`format`: "html" o "json").
 /// Sola lettura sui database.
 #[tauri::command]
@@ -199,6 +211,7 @@ pub fn run() {
             import_dump,
             clone_database,
             compare_databases,
+            compare_table_data,
             export_diff,
             oracle_load,
             oracle_setup,

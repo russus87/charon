@@ -1,6 +1,6 @@
 <script>
   import { app, runCompare, rowsDiffer, tableAligned, connById } from "../lib/state.svelte.js";
-  import { exportDiff, pickReportPath } from "../lib/api.js";
+  import { exportDiff, pickReportPath, compareTableData } from "../lib/api.js";
   import ConnPicker from "./ConnPicker.svelte";
 
   // Vista "Compare": diff fra due database, in stile git.
@@ -28,6 +28,23 @@
   let open = $state({}); // nome tabella → dettaglio colonne espanso
   const toggle = (n) => (open[n] = !open[n]);
   const rows = (n) => (n == null ? "—" : n.toLocaleString("it-IT"));
+
+  // Confronto dati per-tabella (su richiesta): nome tabella → risultato/stato.
+  let dataDiffs = $state({});
+  // Una tabella esiste da entrambe le parti (quindi il data-diff ha senso)?
+  const inBoth = (t) => t.status === "same" || t.status === "changed";
+
+  async function runDataDiff(table) {
+    const src = connById(app.sel.cmpSrc);
+    const dst = connById(app.sel.cmpDst);
+    if (!src || !dst) return;
+    dataDiffs[table] = { loading: true };
+    try {
+      dataDiffs[table] = await compareTableData($state.snapshot(src), $state.snapshot(dst), table);
+    } catch (e) {
+      dataDiffs[table] = { error: String(e) };
+    }
+  }
 
   let exporting = $state(false);
   // Ri-esegue il confronto lato backend e ne salva il report (html/json).
@@ -120,6 +137,42 @@
                 <span class="chev">{open[t.name] ? "▾" : "▸"} {t.columns.length} colonn{t.columns.length === 1 ? "a" : "e"}</span>
               {/if}
             </button>
+
+            {#if inBoth(t)}
+              <div class="data-row">
+                {#if !dataDiffs[t.name]}
+                  <button class="btn ghost sm" onclick={() => runDataDiff(t.name)}>
+                    Confronta dati →
+                  </button>
+                {:else if dataDiffs[t.name].loading}
+                  <span class="ddim">Confronto dati in corso…</span>
+                {:else if dataDiffs[t.name].error}
+                  <span class="derr" title={dataDiffs[t.name].error}>Errore nel confronto dati</span>
+                {:else}
+                  {@const dd = dataDiffs[t.name]}
+                  {#if dd.only_source === 0 && dd.only_target === 0 && dd.changed === 0}
+                    <span class="dd-ok">✓ dati identici ({rows(dd.same)} righe)</span>
+                  {:else}
+                    <span class="dd-badge add" title="solo nella sorgente">+{dd.only_source}</span>
+                    <span class="dd-badge del" title="solo nella destinazione">−{dd.only_target}</span>
+                    <span class="dd-badge chg" title="stessa chiave, valori diversi">~{dd.changed}</span>
+                    <span class="dd-same">{rows(dd.same)} uguali</span>
+                  {/if}
+                  <span class="dd-key">
+                    {dd.key.length ? `chiave: ${dd.key.join(", ")}` : dd.note}
+                  </span>
+                  <button class="btn ghost sm" title="Ricalcola" onclick={() => runDataDiff(t.name)}>↻</button>
+                  {#if dd.sample?.length}
+                    <details class="dd-sample">
+                      <summary>campione ({dd.sample.length})</summary>
+                      {#each dd.sample as s}
+                        <div class="ds {s.kind}"><span class="mark">{MARK[s.kind]}</span><code>{s.key}</code></div>
+                      {/each}
+                    </details>
+                  {/if}
+                {/if}
+              </div>
+            {/if}
 
             {#if open[t.name] && t.columns.length}
               <div class="cols">
@@ -311,6 +364,82 @@
     font-size: 12px;
     color: var(--text-dim, var(--ink-soft));
   }
+  .data-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 7px 12px 9px 30px;
+    border-top: 1px solid var(--line-soft, var(--border));
+    font-size: 12.5px;
+  }
+  .ddim {
+    color: var(--text-faint);
+  }
+  .derr {
+    color: var(--err);
+  }
+  .dd-ok {
+    color: var(--ok, #1f8a4c);
+    font-weight: 600;
+  }
+  .dd-badge {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .dd-badge.add {
+    color: #1f8a4c;
+    background: #e6f6ec;
+  }
+  .dd-badge.del {
+    color: #c0392b;
+    background: #fdeaea;
+  }
+  .dd-badge.chg {
+    color: #b7791f;
+    background: #fbf0dc;
+  }
+  .dd-same {
+    color: var(--text-faint);
+  }
+  .dd-key {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-left: auto;
+  }
+  .dd-sample {
+    flex-basis: 100%;
+    margin-top: 4px;
+  }
+  .dd-sample summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .ds {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 2px 0 2px 14px;
+  }
+  .ds code {
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  .ds.only_source .mark {
+    color: #1f8a4c;
+  }
+  .ds.only_target .mark {
+    color: #c0392b;
+  }
+  .ds.changed .mark {
+    color: #b7791f;
+  }
+
   .cols {
     border-top: 1px solid var(--border);
     background: var(--surface-2, #fafbfd);

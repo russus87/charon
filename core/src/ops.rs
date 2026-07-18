@@ -416,6 +416,30 @@ pub fn compare(src: &Connection, dst: &Connection) -> Result<crate::compare::DbD
     }
 }
 
+/// Confronto **dati** (riga per riga, per chiave primaria) di una singola
+/// tabella fra due database dello stesso motore. Sola lettura. Più pesante del
+/// confronto di schema: si esegue su richiesta per la tabella scelta.
+pub fn compare_data(
+    src: &Connection,
+    dst: &Connection,
+    table: &str,
+) -> Result<crate::compare::TableDataDiff> {
+    if src.engine != dst.engine {
+        return Err(Error::Unsupported(
+            "il confronto dati richiede due database dello stesso motore".into(),
+        ));
+    }
+    let (src, _gs) = prepare(src)?;
+    let (dst, _gd) = prepare(dst)?;
+    match src.engine {
+        Engine::Postgres => postgres::rust_data_diff(&src, &dst, table),
+        Engine::Oracle => oracle::rust_data_diff(&src, &dst, table),
+        Engine::Sqlserver => mssql::rust_data_diff(&src, &dst, table),
+        Engine::Sqlite => sqlite::rust_data_diff(&src, &dst, table),
+        Engine::Mysql => mysql::rust_data_diff(&src, &dst, table),
+    }
+}
+
 /// Verifica la connessione al database.
 pub fn test_connection(conn: &Connection, prefer: Prefer) -> OpResult {
     let (conn, _guard) = match prepare(conn) {

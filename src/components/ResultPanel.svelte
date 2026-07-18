@@ -151,9 +151,4 @@
       animation: none;
     }
   }
-  @media (max-width: 980px) {
-    .console {
-      left: 0;
-    }
-  }
 </style>

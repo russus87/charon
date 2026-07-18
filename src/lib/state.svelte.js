@@ -52,6 +52,7 @@ export const app = $state({
   editing: null, // profilo in modifica nella vista Connessioni (o null)
   // Connessione selezionata per ciascuna operazione (id del profilo).
   sel: { dump: null, import: null, cloneSrc: null, cloneDst: null, cmpSrc: null, cmpDst: null },
+  theme: "auto", // 'auto' | 'light' | 'dark' (vedi initTheme/cycleTheme)
   diff: null, // ultimo DbDiff del confronto (o null)
   diffErr: null, // errore del confronto, se fallito
   comparing: false, // confronto in corso
@@ -249,6 +250,34 @@ function buildCloneOptions() {
       strategy: m.kind === "fixed" ? { kind: "fixed", value: m.value } : { kind: m.kind },
     }));
   return { data_only: app.cloneOpts.dataOnly, mask };
+}
+
+// ------------------------------------------------------------------- tema ---
+
+// 'auto' segue il sistema; 'light'/'dark' forzano. Persistito in localStorage.
+const THEME_KEY = "charon-theme";
+export function initTheme() {
+  try {
+    app.theme = localStorage.getItem(THEME_KEY) || "auto";
+  } catch {
+    app.theme = "auto";
+  }
+}
+// Risolve 'auto' nella preferenza di sistema; ritorna 'light' o 'dark'.
+export function resolvedTheme() {
+  if (app.theme === "light" || app.theme === "dark") return app.theme;
+  const dark = typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+  return dark ? "dark" : "light";
+}
+// Cicla auto → light → dark → auto.
+export function cycleTheme() {
+  const next = { auto: "light", light: "dark", dark: "auto" };
+  app.theme = next[app.theme] ?? "auto";
+  try {
+    localStorage.setItem(THEME_KEY, app.theme);
+  } catch {
+    /* storage non disponibile: resta solo in memoria */
+  }
 }
 
 // Cambia motore e adegua la porta di default. Passando a un motore su file

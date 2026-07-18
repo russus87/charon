@@ -391,16 +391,16 @@
     border-radius: 999px;
   }
   .dd-badge.add {
-    color: #1f8a4c;
-    background: #e6f6ec;
+    color: var(--ok, #1f8a4c);
+    background: var(--ok-soft, #e6f6ec);
   }
   .dd-badge.del {
-    color: #c0392b;
-    background: #fdeaea;
+    color: var(--err, #c0392b);
+    background: var(--err-soft, #fdeaea);
   }
   .dd-badge.chg {
-    color: #b7791f;
-    background: #fbf0dc;
+    color: var(--warn, #b7791f);
+    background: var(--warn-soft, #fbf0dc);
   }
   .dd-same {
     color: var(--text-faint);

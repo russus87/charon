@@ -62,6 +62,88 @@
   color-scheme: light;
 }
 
+/* ============================ TEMA SCURO ============================
+   L'attributo data-theme è impostato via JS (App.svelte) su "light" o
+   "dark", risolvendo "auto" dalla preferenza di sistema. Così basta un
+   solo blocco, senza duplicare tra @media e selettore. */
+:root[data-theme="dark"] {
+  --green-100: #16302a;
+  --green-050: #182721;
+
+  --bg: #0e1411;
+  --surface: #16211c;
+  --surface-2: #1c2820;
+  --border: #26332b;
+  --border-strong: #35473b;
+
+  --text: #e7efe9;
+  --text-dim: #9db0a4;
+  --text-faint: #6b7d72;
+
+  --accent: #4fb488;
+  --accent-soft: #173226;
+
+  --green: #35c07a;
+  --amber: #e0a53a;
+  --red: #e37065;
+  --blue: #7aa2e0;
+  --violet: #a98fe0;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 6px 22px rgba(0, 0, 0, 0.42);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.55);
+
+  --ok: #45c684;
+  --ok-soft: #163026;
+  --err: #e37065;
+  --err-soft: #33201e;
+  --warn: #e0a53a;
+  --warn-soft: #322818;
+
+  color-scheme: dark;
+}
+
+/* Override delle regole con colori "fissi" (badge/pulsanti/scrollbar). */
+:root[data-theme="dark"] .badge.ok,
+:root[data-theme="dark"] .badge.green {
+  background: #163026;
+  color: #5cd196;
+}
+:root[data-theme="dark"] .badge.err,
+:root[data-theme="dark"] .badge.red {
+  background: #33201e;
+  color: #ef8f86;
+}
+:root[data-theme="dark"] .badge.warn,
+:root[data-theme="dark"] .badge.amber {
+  background: #322818;
+  color: #e6b45a;
+}
+:root[data-theme="dark"] .badge.blue {
+  background: #1e2b3f;
+  color: #8fb3ec;
+}
+:root[data-theme="dark"] .badge.grey {
+  background: #232f28;
+  color: #9db0a4;
+}
+:root[data-theme="dark"] .btn.danger {
+  color: #e37065;
+  border-color: #4a2a27;
+  background: #2a1f1e;
+}
+:root[data-theme="dark"] .btn.danger:hover {
+  background: #3a2422;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: #33453a;
+  background-clip: content-box;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: #45554a;
+  background-clip: content-box;
+}
+
 * {
   box-sizing: border-box;
 }

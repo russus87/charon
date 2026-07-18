@@ -1,6 +1,13 @@
 <script>
   import { onMount } from "svelte";
-  import { app, loadReports, loadConnections, initProgress } from "./lib/state.svelte.js";
+  import {
+    app,
+    loadReports,
+    loadConnections,
+    initProgress,
+    initTheme,
+    resolvedTheme,
+  } from "./lib/state.svelte.js";
   import Sidebar from "./components/Sidebar.svelte";
   import Connection from "./components/Connection.svelte";
   import Dump from "./components/Dump.svelte";
@@ -13,9 +20,24 @@
   import ResultPanel from "./components/ResultPanel.svelte";
 
   onMount(() => {
+    initTheme(); // legge la preferenza salvata (auto/light/dark)
     loadReports();
     loadConnections(); // profili di connessione salvati
     initProgress(); // avanzamento live delle operazioni
+
+    // Quando il tema è "auto", segui i cambi di preferenza del sistema.
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const onSys = () => {
+      if (app.theme === "auto") document.documentElement.dataset.theme = resolvedTheme();
+    };
+    mq?.addEventListener?.("change", onSys);
+    return () => mq?.removeEventListener?.("change", onSys);
+  });
+
+  // Applica il tema risolto (light/dark) all'elemento radice a ogni cambio.
+  $effect(() => {
+    // dipende da app.theme
+    document.documentElement.dataset.theme = ((_) => resolvedTheme())(app.theme);
   });
 
   // Metadati di ogni vista: titolo + sottotitolo mostrati nell'intestazione.

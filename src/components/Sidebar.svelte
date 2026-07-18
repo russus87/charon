@@ -1,6 +1,13 @@
 <script>
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { app, reportFor } from "../lib/state.svelte.js";
+  import { app, reportFor, cycleTheme } from "../lib/state.svelte.js";
+
+  // Etichetta/icona del tema corrente (ciclo auto → chiaro → scuro).
+  const THEME_UI = {
+    auto: { icon: "◐", label: "Tema: auto" },
+    light: { icon: "☀", label: "Tema: chiaro" },
+    dark: { icon: "☾", label: "Tema: scuro" },
+  };
 
   const VERSION = "0.2.1"; // versione app (allineata a Cargo/tauri.conf)
 
@@ -79,6 +86,11 @@
           </span>
         {/each}
       </div>
+    </button>
+
+    <button class="theme-toggle" onclick={cycleTheme} title="Cambia tema (auto / chiaro / scuro)">
+      <span class="ti">{THEME_UI[app.theme].icon}</span>
+      {THEME_UI[app.theme].label}
     </button>
 
     <div class="app-meta">
@@ -207,6 +219,28 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+  .theme-toggle {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #c4ddd0;
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.13s ease;
+  }
+  .theme-toggle:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+  }
+  .theme-toggle .ti {
+    font-size: 15px;
+    line-height: 1;
   }
   .app-meta {
     display: flex;

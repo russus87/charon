@@ -150,7 +150,7 @@
     align-items: baseline;
   }
   .row.danger {
-    background: #fdf5f4;
+    background: var(--err-soft);
   }
   dt {
     font-size: 12px;

@@ -123,6 +123,45 @@ impl TableDiff {
     }
 }
 
+/// Una riga che differisce fra i due lati, per il campione ispezionabile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RowDelta {
+    /// Chiave della riga, serializzata in modo leggibile (es. `id=42`).
+    pub key: String,
+    /// Come differisce: OnlySource, OnlyTarget o Changed (mai Same qui).
+    pub kind: Status,
+}
+
+/// Esito del confronto **dati** di una tabella: righe confrontate per chiave
+/// primaria (o, in assenza, per riga intera). A differenza del conteggio del
+/// [`TableDiff`], questo distingue righe aggiunte / rimosse / modificate — e
+/// chiude il falso negativo "stesso numero di righe = uguali".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableDataDiff {
+    pub table: String,
+    /// Colonne usate come chiave. Vuoto se si è confrontata la riga intera.
+    pub key: Vec<String>,
+    /// Righe presenti solo nella sorgente.
+    pub only_source: i64,
+    /// Righe presenti solo nella destinazione.
+    pub only_target: i64,
+    /// Righe con la stessa chiave ma valori diversi.
+    pub changed: i64,
+    /// Righe identiche da entrambe le parti.
+    pub same: i64,
+    /// Campione (prime N) delle righe divergenti, per ispezione in UI.
+    pub sample: Vec<RowDelta>,
+    /// Nota diagnostica (es. "nessuna chiave primaria: confronto per riga intera").
+    pub note: Option<String>,
+}
+
+impl TableDataDiff {
+    /// Le due tabelle hanno dati allineati?
+    pub fn aligned(&self) -> bool {
+        self.only_source == 0 && self.only_target == 0 && self.changed == 0
+    }
+}
+
 /// Esito completo del confronto fra due database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbDiff {

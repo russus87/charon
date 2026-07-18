@@ -10,6 +10,7 @@
 
 use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
+use crate::schema::{AbstractType, Column, SchemaModel, Table};
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
 use std::path::Path;
@@ -946,6 +947,21 @@ pub fn rust_test(conn: &Connection, log: &mut Vec<String>) -> Result<()> {
     }
 }
 
+/// Legge lo schema **neutro** (tabelle, colonne mappate su [`AbstractType`],
+/// chiavi primarie) via driver puro-Rust: base per il confronto e la
+/// clonazione cross-motore.
+pub fn rust_read_schema(conn: &Connection) -> Result<SchemaModel> {
+    #[cfg(feature = "oracle-driver")]
+    {
+        return rustimpl::read_schema(conn);
+    }
+    #[cfg(not(feature = "oracle-driver"))]
+    {
+        let _ = conn;
+        Err(no_driver())
+    }
+}
+
 /// Implementazione puro-Rust basata sul crate `oracle` (ODPI-C). Best-effort:
 /// esporta schema essenziale (colonne, tipi, NOT NULL) e dati come INSERT, e
 /// clona src→dst lato client (SELECT→INSERT) senza DATA_PUMP_DIR.
@@ -1256,6 +1272,74 @@ mod rustimpl {
             map.insert(key_str, (val_str, key_display));
         }
         Ok(map)
+    }
+
+    // -------------------------------------------------------- schema neutro ---
+
+    /// Mappa un tipo Oracle (data_type + length/precision/scale grezzi di
+    /// `user_tab_columns`) sul tipo neutro [`AbstractType`], per il confronto e
+    /// la clonazione cross-motore.
+    fn abstract_type(dtype: &str, len: Option<i64>, prec: Option<i64>, scale: Option<i64>) -> AbstractType {
+        let d = dtype.to_uppercase();
+        if d.starts_with("TIMESTAMP") {
+            return AbstractType::Timestamp { tz: d.contains("WITH TIME ZONE") };
+        }
+        match d.as_str() {
+            "VARCHAR2" | "NVARCHAR2" | "CHAR" | "NCHAR" => {
+                AbstractType::Text { max: len.map(|n| n as u32) }
+            }
+            "CLOB" | "NCLOB" | "LONG" => AbstractType::Text { max: None },
+            "NUMBER" => match scale {
+                // Scala positiva: numero con decimali.
+                Some(s) if s > 0 => AbstractType::Decimal {
+                    precision: prec.map(|p| p as u32),
+                    scale: scale.map(|s| s as u32),
+                },
+                // Scala 0 o assente: intero, se conosciamo la precisione
+                // (l'ampiezza in bit dipende dal numero di cifre).
+                _ => match prec {
+                    Some(p) => AbstractType::Integer {
+                        bits: if p <= 4 {
+                            16
+                        } else if p <= 9 {
+                            32
+                        } else {
+                            64
+                        },
+                    },
+                    None => AbstractType::Decimal { precision: None, scale: None },
+                },
+            },
+            "FLOAT" | "BINARY_FLOAT" => AbstractType::Float { double: false },
+            "BINARY_DOUBLE" => AbstractType::Float { double: true },
+            "DATE" => AbstractType::Date,
+            "BLOB" => AbstractType::Binary { max: None },
+            "RAW" | "LONG RAW" => AbstractType::Binary { max: len.map(|n| n as u32) },
+            _ => AbstractType::Unknown { raw: dtype.to_string() },
+        }
+    }
+
+    /// Legge lo schema neutro dell'intero database: tutte le tabelle
+    /// dell'utente, con colonne mappate su [`AbstractType`] e chiavi primarie
+    /// (riusa le stesse query di `columns`/`primary_key_cols` usate dal diff).
+    pub fn read_schema(conn: &Connection) -> Result<SchemaModel> {
+        let c = connect(conn)?;
+        let table_names = list_tables(&c)?;
+        let mut tables = Vec::with_capacity(table_names.len());
+        for name in table_names {
+            let cols = columns(&c, &name)?;
+            let pk = primary_key_cols(&c, &name)?;
+            let columns_neutre = cols
+                .into_iter()
+                .map(|col| {
+                    let ty = abstract_type(&col.dtype, col.len, col.prec, col.scale);
+                    let primary_key = pk.iter().any(|p| *p == col.name);
+                    Column { name: col.name, ty, nullable: !col.not_null, primary_key }
+                })
+                .collect();
+            tables.push(Table { name, columns: columns_neutre });
+        }
+        Ok(SchemaModel { tables })
     }
 
     /// Confronto DATI riga-per-riga di una tabella: righe accoppiate per

@@ -11,6 +11,7 @@
 //! tutti i motori (pura formattazione, nessun accesso al DB). La direzione
 //! inversa (**catalogo → AbstractType**) vive nei moduli dei singoli motori.
 
+use crate::compare::{ColumnDiff, DbDiff, Status, TableDiff};
 use crate::model::Engine;
 use serde::{Deserialize, Serialize};
 
@@ -211,6 +212,99 @@ impl SchemaModel {
     }
 }
 
+/// Definizione «logica» di una colonna per il confronto: forma canonica del tipo
+/// (uguale fra motori diversi) + nullabilità.
+fn logical_def(c: &Column) -> String {
+    format!("{}{}", c.ty.canonical(), if c.nullable { "" } else { " NOT NULL" })
+}
+
+fn table_one_side(t: &Table, status: Status) -> TableDiff {
+    let on_source = status == Status::OnlySource;
+    let columns = t
+        .columns
+        .iter()
+        .map(|c| {
+            let def = Some(logical_def(c));
+            ColumnDiff {
+                name: c.name.clone(),
+                status,
+                source: if on_source { def.clone() } else { None },
+                target: if on_source { None } else { def },
+            }
+        })
+        .collect();
+    TableDiff {
+        name: t.name.clone(),
+        status,
+        columns,
+        source_rows: None,
+        target_rows: None,
+    }
+}
+
+/// Confronta due schemi **neutri** e produce un [`DbDiff`] usando la forma
+/// canonica dei tipi: così due colonne equivalenti su motori diversi (es.
+/// `VARCHAR2(50)` Oracle e `varchar(50)` PostgreSQL) risultano «uguali».
+/// I conteggi righe sono `None` (il confronto cross-motore è di solo schema).
+pub fn diff_schemas(
+    src: &SchemaModel,
+    dst: &SchemaModel,
+    src_label: String,
+    dst_label: String,
+) -> DbDiff {
+    let mut names: Vec<String> = src
+        .tables
+        .iter()
+        .chain(dst.tables.iter())
+        .map(|t| t.name.clone())
+        .collect();
+    names.sort();
+    names.dedup();
+
+    let mut tables = Vec::new();
+    for name in names {
+        match (src.table(&name), dst.table(&name)) {
+            (Some(st), None) => tables.push(table_one_side(st, Status::OnlySource)),
+            (None, Some(dt)) => tables.push(table_one_side(dt, Status::OnlyTarget)),
+            (Some(st), Some(dt)) => {
+                let mut cnames: Vec<String> = st
+                    .columns
+                    .iter()
+                    .chain(dt.columns.iter())
+                    .map(|c| c.name.clone())
+                    .collect();
+                cnames.sort();
+                cnames.dedup();
+
+                let mut columns = Vec::new();
+                for cn in cnames {
+                    let sc = st.columns.iter().find(|c| c.name == cn);
+                    let dc = dt.columns.iter().find(|c| c.name == cn);
+                    let status = match (sc, dc) {
+                        (Some(a), Some(b)) if logical_def(a) == logical_def(b) => Status::Same,
+                        (Some(_), Some(_)) => Status::Changed,
+                        (Some(_), None) => Status::OnlySource,
+                        (None, Some(_)) => Status::OnlyTarget,
+                        (None, None) => continue,
+                    };
+                    if status != Status::Same {
+                        columns.push(ColumnDiff {
+                            name: cn,
+                            status,
+                            source: sc.map(logical_def),
+                            target: dc.map(logical_def),
+                        });
+                    }
+                }
+                let status = if columns.is_empty() { Status::Same } else { Status::Changed };
+                tables.push(TableDiff { name, status, columns, source_rows: None, target_rows: None });
+            }
+            (None, None) => {}
+        }
+    }
+    DbDiff { tables, source_label: src_label, target_label: dst_label, log: Vec::new() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +339,46 @@ mod tests {
         let big = AbstractType::Integer { bits: 64 };
         assert_eq!(big.to_ddl(Engine::Postgres), "bigint");
         assert_eq!(big.to_ddl(Engine::Oracle), "NUMBER(19)");
+    }
+
+    fn col(name: &str, ty: AbstractType, nullable: bool) -> Column {
+        Column { name: name.into(), ty, nullable, primary_key: false }
+    }
+
+    #[test]
+    fn diff_cross_motore_normalizza_i_tipi() {
+        // "Oracle": id NUMBER(10) → Integer(32), nome VARCHAR2(50) → Text(50)
+        let oracle = SchemaModel {
+            tables: vec![Table {
+                name: "clienti".into(),
+                columns: vec![
+                    col("id", AbstractType::Integer { bits: 32 }, false),
+                    col("nome", AbstractType::Text { max: Some(50) }, true),
+                    col("solo_oracle", AbstractType::Date, true),
+                ],
+            }],
+        };
+        // "Postgres": stessi tipi logici (int/varchar(50)) → devono risultare uguali
+        let pg = SchemaModel {
+            tables: vec![
+                Table {
+                    name: "clienti".into(),
+                    columns: vec![
+                        col("id", AbstractType::Integer { bits: 32 }, false),
+                        col("nome", AbstractType::Text { max: Some(50) }, true),
+                    ],
+                },
+                Table { name: "solo_pg".into(), columns: vec![] },
+            ],
+        };
+        let d = diff_schemas(&oracle, &pg, "ora".into(), "pg".into());
+        let clienti = d.tables.iter().find(|t| t.name == "clienti").unwrap();
+        // id e nome combaciano (normalizzati) → nel diff resta solo la colonna extra
+        assert_eq!(clienti.status, Status::Changed);
+        assert_eq!(clienti.columns.len(), 1);
+        assert_eq!(clienti.columns[0].name, "solo_oracle");
+        assert_eq!(clienti.columns[0].status, Status::OnlySource);
+        // tabelle presenti da un lato solo
+        assert_eq!(d.tables.iter().find(|t| t.name == "solo_pg").unwrap().status, Status::OnlyTarget);
     }
 }

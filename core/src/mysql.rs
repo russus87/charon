@@ -9,6 +9,7 @@
 
 use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
+use crate::schema::{AbstractType, Column, SchemaModel, Table};
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
 use std::process::Command;
@@ -270,6 +271,21 @@ pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
     }
 }
 
+/// Legge lo schema neutro (indipendente dal motore) dell'intero database:
+/// tabelle, colonne con tipo astratto/nullabilità e chiave primaria. Sincrona
+/// come `rust_compare`: nessun runtime async necessario.
+pub fn rust_read_schema(conn: &Connection) -> Result<SchemaModel> {
+    #[cfg(feature = "mysql-driver")]
+    {
+        return rustimpl::read_schema(conn);
+    }
+    #[cfg(not(feature = "mysql-driver"))]
+    {
+        let _ = conn;
+        Err(no_driver())
+    }
+}
+
 /// Confronta i dati di una singola tabella riga per riga (per chiave primaria,
 /// o per riga intera se la tabella non ne ha una). Sincrona come `rust_compare`.
 pub fn rust_data_diff(src: &Connection, dst: &Connection, table: &str) -> Result<TableDataDiff> {
@@ -519,6 +535,101 @@ mod rustimpl {
             target_label: format!("{}:{}/{}", dst.host, dst.port, dst.database),
             log,
         })
+    }
+
+    // --------------------------------------------------------------- schema ---
+
+    /// Colonne della chiave primaria di una tabella, nell'ordine dichiarato
+    /// (stessa query usata da `data_diff`).
+    fn pk_columns(client: &mut Conn, db: &str, table: &str) -> Result<Vec<String>> {
+        client
+            .query(format!(
+                "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE \
+                 WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}' AND CONSTRAINT_NAME = 'PRIMARY' \
+                 ORDER BY ORDINAL_POSITION",
+                esc(db),
+                esc(table)
+            ))
+            .map_err(|e| Error::Msg(e.to_string()))
+    }
+
+    /// Mappa `DATA_TYPE`/`COLUMN_TYPE` (in minuscolo) di `information_schema`
+    /// sul tipo astratto neutro. `Unknown` conserva il `DATA_TYPE` originale
+    /// per i tipi non riconosciuti.
+    fn map_type(
+        data_type: &str,
+        column_type: &str,
+        char_max_len: Option<i64>,
+        num_precision: Option<i64>,
+        num_scale: Option<i64>,
+    ) -> AbstractType {
+        let dt = data_type.to_lowercase();
+        let ct = column_type.to_lowercase();
+        match dt.as_str() {
+            "varchar" | "char" => AbstractType::Text { max: char_max_len.map(|n| n as u32) },
+            "text" | "tinytext" | "mediumtext" | "longtext" => AbstractType::Text { max: None },
+            "tinyint" if ct == "tinyint(1)" => AbstractType::Boolean,
+            "tinyint" | "smallint" => AbstractType::Integer { bits: 16 },
+            "mediumint" | "int" => AbstractType::Integer { bits: 32 },
+            "bigint" => AbstractType::Integer { bits: 64 },
+            "decimal" | "numeric" => AbstractType::Decimal {
+                precision: num_precision.map(|n| n as u32),
+                scale: num_scale.map(|n| n as u32),
+            },
+            "float" => AbstractType::Float { double: false },
+            "double" => AbstractType::Float { double: true },
+            "date" => AbstractType::Date,
+            "time" => AbstractType::Time,
+            "datetime" | "timestamp" => AbstractType::Timestamp { tz: false },
+            "binary" | "varbinary" => AbstractType::Binary { max: char_max_len.map(|n| n as u32) },
+            "blob" | "tinyblob" | "mediumblob" | "longblob" => AbstractType::Binary { max: None },
+            "json" => AbstractType::Json,
+            _ => AbstractType::Unknown { raw: data_type.to_string() },
+        }
+    }
+
+    /// Legge lo schema neutro dell'intero database: per ogni tabella, le
+    /// colonne (tipo astratto, nullabilità) e la chiave primaria, ricavate da
+    /// `information_schema`.
+    pub fn read_schema(conn: &Connection) -> Result<SchemaModel> {
+        let mut client = connect(conn)?;
+        let table_names = list_tables(&mut client, &conn.database)?;
+
+        let mut tables = Vec::with_capacity(table_names.len());
+        for tname in &table_names {
+            let pk = pk_columns(&mut client, &conn.database, tname)?;
+
+            let rows: Vec<(
+                String,
+                String,
+                String,
+                Option<i64>,
+                Option<i64>,
+                Option<i64>,
+                String,
+            )> = client
+                .query(format!(
+                    "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, CHARACTER_MAXIMUM_LENGTH, \
+                     NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE FROM information_schema.columns \
+                     WHERE table_schema = '{}' AND table_name = '{}' ORDER BY ORDINAL_POSITION",
+                    esc(&conn.database),
+                    esc(tname)
+                ))
+                .map_err(|e| Error::Msg(e.to_string()))?;
+
+            let mut columns = Vec::with_capacity(rows.len());
+            for (name, data_type, column_type, char_max_len, num_precision, num_scale, is_nullable) in
+                rows
+            {
+                let ty = map_type(&data_type, &column_type, char_max_len, num_precision, num_scale);
+                let primary_key = pk.iter().any(|k| k == &name);
+                columns.push(Column { name, ty, nullable: is_nullable == "YES", primary_key });
+            }
+
+            tables.push(Table { name: tname.clone(), columns });
+        }
+
+        Ok(SchemaModel { tables })
     }
 
     // -------------------------------------------------------------- dati ---

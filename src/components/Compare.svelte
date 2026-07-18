@@ -29,6 +29,12 @@
   const toggle = (n) => (open[n] = !open[n]);
   const rows = (n) => (n == null ? "—" : n.toLocaleString("it-IT"));
 
+  // Motori dei due lati: data-diff e allineamento sono solo per lo stesso motore
+  // (il confronto cross-motore è di solo schema, sui tipi normalizzati).
+  let cmpSrc = $derived(connById(app.sel.cmpSrc));
+  let cmpDst = $derived(connById(app.sel.cmpDst));
+  let sameEngine = $derived(!!cmpSrc && !!cmpDst && cmpSrc.engine === cmpDst.engine);
+
   // Confronto dati per-tabella (su richiesta): nome tabella → risultato/stato.
   let dataDiffs = $state({});
   // Una tabella esiste da entrambe le parti (quindi il data-diff ha senso)?
@@ -157,7 +163,7 @@
               {/if}
             </button>
 
-            {#if inBoth(t)}
+            {#if inBoth(t) && sameEngine}
               <div class="data-row">
                 {#if !dataDiffs[t.name]}
                   <button class="btn ghost sm" onclick={() => runDataDiff(t.name)}>
@@ -217,7 +223,15 @@
         nell'allineamento sono distruttive: lo script va sempre riletto.
       </p>
 
-      {#if diffCount > 0}
+      {#if !sameEngine}
+        <p class="xnote">
+          Confronto <b>cross-motore</b> ({cmpSrc?.engine} → {cmpDst?.engine}): solo schema, con
+          i tipi normalizzati. Il confronto dati e l'allineamento sono disponibili fra database
+          dello stesso motore.
+        </p>
+      {/if}
+
+      {#if diffCount > 0 && sameEngine}
         <div class="sync">
           <div class="sync-head">
             <div>
@@ -580,5 +594,13 @@
     margin: 4px 0 0;
     font-size: 12px;
     color: var(--text-faint);
+  }
+  .xnote {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    font-size: 12.5px;
+    color: var(--text-dim);
   }
 </style>

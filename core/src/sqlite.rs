@@ -13,6 +13,7 @@
 
 use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
+use crate::schema::{AbstractType, Column, SchemaModel, Table};
 use crate::tools::{find_tool, has_tool};
 use crate::{Error, Result};
 use std::process::Command;
@@ -344,6 +345,21 @@ pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec
     }
 }
 
+/// Legge lo **schema neutro** (indipendente dal motore) di un database SQLite:
+/// tabelle utente e colonne, con i tipi dichiarati mappati su [`AbstractType`]
+/// secondo le regole di affinità di SQLite. Sincrona come le altre operazioni.
+pub fn rust_read_schema(conn: &Connection) -> Result<SchemaModel> {
+    #[cfg(feature = "sqlite-driver")]
+    {
+        return rustimpl::read_schema(conn);
+    }
+    #[cfg(not(feature = "sqlite-driver"))]
+    {
+        let _ = conn;
+        Err(no_driver())
+    }
+}
+
 #[cfg(feature = "sqlite-driver")]
 mod rustimpl {
     use super::*;
@@ -441,6 +457,86 @@ mod rustimpl {
             out.push((name, def));
         }
         Ok(out)
+    }
+
+    // --------------------------------------------------------- schema neutro ---
+
+    /// Estrae gli interi tra parentesi in una dichiarazione di tipo, es.
+    /// `"VARCHAR(255)"` → `[255]`, `"DECIMAL(10,2)"` → `[10, 2]`. Nessuna
+    /// parentesi o contenuto non numerico → lista vuota.
+    fn parse_parens(raw: &str) -> Vec<u32> {
+        let Some(start) = raw.find('(') else { return Vec::new() };
+        let Some(end) = raw[start..].find(')') else { return Vec::new() };
+        raw[start + 1..start + end]
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u32>().ok())
+            .collect()
+    }
+
+    /// Mappa il tipo dichiarato di SQLite (stringa libera, spesso assente) su
+    /// [`AbstractType`], seguendo le regole di **affinità di tipo** di SQLite:
+    /// non è un vero sistema di tipi, ma un'euristica sul nome dichiarato.
+    fn map_type(raw: &str) -> AbstractType {
+        let upper = raw.to_uppercase();
+        let nums = parse_parens(&upper);
+
+        if upper.contains("INT") {
+            let bits = if upper.contains("BIG") { 64 } else { 32 };
+            AbstractType::Integer { bits }
+        } else if upper.contains("CHAR") || upper.contains("CLOB") || upper.contains("TEXT") {
+            AbstractType::Text { max: nums.first().copied() }
+        } else if upper.contains("BOOL") {
+            AbstractType::Boolean
+        } else if upper.contains("REAL") || upper.contains("FLOA") || upper.contains("DOUB") {
+            AbstractType::Float { double: true }
+        } else if upper.contains("DEC") || upper.contains("NUMERIC") {
+            let precision = nums.first().copied();
+            let scale = nums.get(1).copied();
+            AbstractType::Decimal { precision, scale }
+        } else if upper.contains("BLOB") || upper.trim().is_empty() {
+            AbstractType::Binary { max: None }
+        } else if upper.contains("DATETIME") || upper.contains("TIMESTAMP") {
+            AbstractType::Timestamp { tz: false }
+        } else if upper.contains("DATE") {
+            AbstractType::Date
+        } else if upper.contains("TIME") {
+            AbstractType::Time
+        } else {
+            // Affinità di default di SQLite per i tipi non riconosciuti.
+            AbstractType::Text { max: None }
+        }
+    }
+
+    /// Legge lo schema neutro: tabelle utenti e colonne via `PRAGMA table_info`.
+    pub fn read_schema(conn: &Connection) -> Result<SchemaModel> {
+        let c = open_ro(db_path(conn))?;
+        let mut tables = Vec::new();
+        for name in list_tables(&c)? {
+            let mut st = c
+                .prepare(&format!("PRAGMA table_info(\"{name}\")"))
+                .map_err(|e| Error::Msg(e.to_string()))?;
+            let rows = st
+                .query_map([], |r| {
+                    let cname: String = r.get(1)?;
+                    let ctype: String = r.get(2)?;
+                    let notnull: i64 = r.get(3)?;
+                    let pk: i64 = r.get(5)?;
+                    Ok((cname, ctype, notnull, pk))
+                })
+                .map_err(|e| Error::Msg(e.to_string()))?;
+            let mut columns = Vec::new();
+            for r in rows {
+                let (cname, ctype, notnull, pk) = r.map_err(|e| Error::Msg(e.to_string()))?;
+                columns.push(Column {
+                    name: cname,
+                    ty: map_type(&ctype),
+                    nullable: notnull == 0,
+                    primary_key: pk > 0,
+                });
+            }
+            tables.push(Table { name, columns });
+        }
+        Ok(SchemaModel { tables })
     }
 
     /// Conta le righe di una tabella. Best-effort: `None` se non contabile.

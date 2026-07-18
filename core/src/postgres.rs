@@ -6,6 +6,7 @@
 
 use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
+use crate::schema::{AbstractType, Column, SchemaModel, Table};
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
 use std::process::Command;
@@ -348,6 +349,25 @@ pub fn rust_compare(src: &Connection, dst: &Connection) -> Result<DbDiff> {
     #[cfg(not(feature = "pg-driver"))]
     {
         let _ = (src, dst);
+        Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
+    }
+}
+
+/// Legge lo schema neutro (tabelle + colonne + chiave primaria) dello schema
+/// `public`, per il confronto e la clonazione **cross-motore**. Stesso pattern
+/// delle altre `rust_*`: runtime tokio dedicato + `block_on`.
+pub fn rust_read_schema(conn: &Connection) -> Result<SchemaModel> {
+    #[cfg(feature = "pg-driver")]
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| Error::Msg(format!("runtime tokio: {e}")))?;
+        return rt.block_on(rustimpl::read_schema(conn));
+    }
+    #[cfg(not(feature = "pg-driver"))]
+    {
+        let _ = conn;
         Err(Error::Unsupported("fallback Postgres non disponibile in questa build".into()))
     }
 }
@@ -986,6 +1006,98 @@ mod rustimpl {
             target_label: label(dst),
             log,
         })
+    }
+
+    // --------------------------------------------------------- schema neutro ---
+
+    /// Mappa un `data_type` di `information_schema.columns` nel tipo neutro
+    /// [`AbstractType`] (confronto case-insensitive, alias SQL più comuni).
+    /// Qualsiasi tipo non riconosciuto (array, enum, tipi custom, ecc.) finisce
+    /// in `Unknown` conservando il testo originale, così non si perde
+    /// informazione.
+    fn map_abstract_type(
+        dtype: &str,
+        maxlen: Option<i32>,
+        precision: Option<i32>,
+        scale: Option<i32>,
+    ) -> AbstractType {
+        match dtype.to_lowercase().as_str() {
+            "character varying" | "varchar" => AbstractType::Text { max: maxlen.map(|n| n as u32) },
+            "character" | "char" | "bpchar" => AbstractType::Text { max: maxlen.map(|n| n as u32) },
+            "text" => AbstractType::Text { max: None },
+            "smallint" | "int2" => AbstractType::Integer { bits: 16 },
+            "integer" | "int4" => AbstractType::Integer { bits: 32 },
+            "bigint" | "int8" => AbstractType::Integer { bits: 64 },
+            "numeric" | "decimal" => AbstractType::Decimal {
+                precision: precision.map(|n| n as u32),
+                scale: scale.map(|n| n as u32),
+            },
+            "real" | "float4" => AbstractType::Float { double: false },
+            "double precision" | "float8" => AbstractType::Float { double: true },
+            "boolean" | "bool" => AbstractType::Boolean,
+            "date" => AbstractType::Date,
+            "time" | "time without time zone" => AbstractType::Time,
+            "timestamp without time zone" | "timestamp" => AbstractType::Timestamp { tz: false },
+            "timestamp with time zone" | "timestamptz" => AbstractType::Timestamp { tz: true },
+            "bytea" => AbstractType::Binary { max: None },
+            "uuid" => AbstractType::Uuid,
+            "json" | "jsonb" => AbstractType::Json,
+            _ => AbstractType::Unknown { raw: dtype.to_string() },
+        }
+    }
+
+    /// Legge lo schema neutro (tabelle + colonne + chiave primaria) dello
+    /// schema `public`: la base per il confronto e la clonazione cross-motore
+    /// (vedi `crate::schema`).
+    pub async fn read_schema(conn: &Connection) -> Result<SchemaModel> {
+        let client = connect(conn).await?;
+        let table_names = list_tables(&client).await?;
+
+        let mut tables = Vec::new();
+        for table in &table_names {
+            crate::progress::emit(&format!("  schema {table}…"));
+
+            let cols = client
+                .query(
+                    "SELECT column_name, data_type, character_maximum_length, \
+                     numeric_precision, numeric_scale, is_nullable \
+                     FROM information_schema.columns \
+                     WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position",
+                    &[table],
+                )
+                .await
+                .map_err(perr)?;
+
+            // Colonne della chiave primaria (stessa query usata in `data_diff`).
+            let pk_rows = client
+                .query(
+                    "SELECT a.attname FROM pg_index i \
+                     JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) \
+                     WHERE i.indrelid = format('public.%I', $1::text)::regclass AND i.indisprimary \
+                     ORDER BY array_position(i.indkey, a.attnum)",
+                    &[table],
+                )
+                .await
+                .map_err(perr)?;
+            let pk_cols: Vec<String> = pk_rows.iter().map(|r| r.get::<_, String>(0)).collect();
+
+            let mut columns = Vec::new();
+            for c in &cols {
+                let name: String = c.get(0);
+                let dtype: String = c.get(1);
+                let maxlen: Option<i32> = c.get(2);
+                let precision: Option<i32> = c.get(3);
+                let scale: Option<i32> = c.get(4);
+                let nullable: String = c.get(5);
+                let ty = map_abstract_type(&dtype, maxlen, precision, scale);
+                let primary_key = pk_cols.contains(&name);
+                columns.push(Column { name, ty, nullable: nullable == "YES", primary_key });
+            }
+
+            tables.push(Table { name: table.clone(), columns });
+        }
+
+        Ok(SchemaModel { tables })
     }
 
     // -------------------------------------------------------- data_diff ---

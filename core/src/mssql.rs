@@ -7,6 +7,7 @@
 
 use crate::compare::{ColumnDiff, DbDiff, RowDelta, Status, TableDataDiff, TableDiff};
 use crate::model::*;
+use crate::schema::{AbstractType, Column, SchemaModel, Table};
 use crate::tools::{find_tool, has_tool, plan_or_run, run};
 use crate::{Error, Result};
 use std::process::Command;
@@ -284,6 +285,21 @@ pub fn rust_data_diff(src: &Connection, dst: &Connection, table: &str) -> Result
     }
 }
 
+/// Legge lo **schema neutro** (indipendente dal motore) del database: tabelle,
+/// colonne (con tipo astratto) e chiavi primarie. Usato dal confronto/clone
+/// cross-motore (vedi `core/src/schema.rs`).
+pub fn rust_read_schema(conn: &Connection) -> Result<SchemaModel> {
+    #[cfg(feature = "mssql-driver")]
+    {
+        return rustimpl::runtime()?.block_on(rustimpl::read_schema(conn));
+    }
+    #[cfg(not(feature = "mssql-driver"))]
+    {
+        let _ = conn;
+        Err(Error::Unsupported("fallback SQL Server non disponibile in questa build".into()))
+    }
+}
+
 /// Esporta i dati di tutte le tabelle di `conn` in `out_dir`, un file per
 /// tabella, nel formato scelto (`csv`/`json`). Ritorna i percorsi scritti.
 pub fn rust_export(conn: &Connection, out_dir: &str, format: &str) -> Result<Vec<String>> {
@@ -388,6 +404,108 @@ mod rustimpl {
             },
             other => other.to_string(),
         }
+    }
+
+    // --------------------------------------------------------- schema neutro ---
+
+    /// Mappa un tipo SQL Server (da `INFORMATION_SCHEMA.COLUMNS`) sul tipo
+    /// astratto [`AbstractType`]. `data_type` è già atteso minuscolo (SQL Server
+    /// lo restituisce così), ma normalizziamo comunque per sicurezza.
+    /// `CHARACTER_MAXIMUM_LENGTH = -1` significa "senza limite" (`(max)`) → `None`.
+    fn map_abstract_type(
+        data_type: &str,
+        char_len: Option<i32>,
+        prec: Option<i32>,
+        scale: Option<i32>,
+    ) -> AbstractType {
+        let max = match char_len {
+            Some(-1) | None => None,
+            Some(n) => Some(n as u32),
+        };
+        match data_type.to_lowercase().as_str() {
+            "varchar" | "nvarchar" | "char" | "nchar" => AbstractType::Text { max },
+            "text" | "ntext" => AbstractType::Text { max: None },
+            "tinyint" | "smallint" => AbstractType::Integer { bits: 16 },
+            "int" => AbstractType::Integer { bits: 32 },
+            "bigint" => AbstractType::Integer { bits: 64 },
+            "bit" => AbstractType::Boolean,
+            "decimal" | "numeric" => AbstractType::Decimal {
+                precision: prec.map(|p| p as u32),
+                scale: scale.map(|s| s as u32),
+            },
+            "money" | "smallmoney" => AbstractType::Decimal { precision: Some(19), scale: Some(4) },
+            "real" => AbstractType::Float { double: false },
+            "float" => AbstractType::Float { double: true },
+            "date" => AbstractType::Date,
+            "time" => AbstractType::Time,
+            "datetime" | "datetime2" | "smalldatetime" => AbstractType::Timestamp { tz: false },
+            "datetimeoffset" => AbstractType::Timestamp { tz: true },
+            "binary" | "varbinary" => AbstractType::Binary { max },
+            "image" => AbstractType::Binary { max: None },
+            "uniqueidentifier" => AbstractType::Uuid,
+            other => AbstractType::Unknown { raw: other.to_string() },
+        }
+    }
+
+    /// Legge le colonne primarie di `schema.table` (stessa query di
+    /// `data_diff`/`dump_sql` su `sys.indexes`), in ordine di chiave.
+    async fn pk_columns(client: &mut Conn, schema: &str, table: &str) -> Result<Vec<String>> {
+        let full = format!("[{schema}].[{table}]");
+        let rows = query(
+            client,
+            &format!(
+                "SELECT c.name FROM sys.indexes i \
+                 JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
+                 JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
+                 WHERE i.is_primary_key = 1 AND i.object_id = OBJECT_ID('{full}') \
+                 ORDER BY ic.key_ordinal"
+            ),
+        )
+        .await?;
+        Ok(rows.iter().map(|r| s(r, 0)).collect())
+    }
+
+    /// Legge lo schema neutro dell'intero database: una [`Table`] per ogni
+    /// BASE TABLE, con le colonne mappate su [`AbstractType`] e le chiavi
+    /// primarie marcate. Il nome di tabella nel modello è quello semplice
+    /// (senza schema), per permettere il confronto cross-motore.
+    pub async fn read_schema(conn: &Connection) -> Result<SchemaModel> {
+        let mut client = connect(conn).await?;
+        let tables = list_tables(&mut client).await?;
+
+        let mut model_tables = Vec::new();
+        for (schema, table) in &tables {
+            let col_rows = query(
+                &mut client,
+                &format!(
+                    "SELECT COLUMN_NAME, DATA_TYPE, CAST(CHARACTER_MAXIMUM_LENGTH AS INT), \
+                     CAST(NUMERIC_PRECISION AS INT), CAST(NUMERIC_SCALE AS INT), IS_NULLABLE \
+                     FROM INFORMATION_SCHEMA.COLUMNS \
+                     WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}' \
+                     ORDER BY ORDINAL_POSITION"
+                ),
+            )
+            .await?;
+
+            let pk = pk_columns(&mut client, schema, table).await?;
+
+            let mut columns = Vec::new();
+            for r in &col_rows {
+                let name = s(r, 0);
+                let data_type = s(r, 1);
+                let char_len = i(r, 2);
+                let prec = i(r, 3);
+                let scale = i(r, 4);
+                let nullable = s(r, 5).eq_ignore_ascii_case("YES");
+                let ty = map_abstract_type(&data_type, char_len, prec, scale);
+                let primary_key = pk.iter().any(|k| k == &name);
+                columns.push(Column { name, ty, nullable, primary_key });
+            }
+
+            model_tables.push(Table { name: table.clone(), columns });
+        }
+
+        Ok(SchemaModel { tables: model_tables })
     }
 
     // ------------------------------------------------------------- compare ---

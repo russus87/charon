@@ -490,3 +490,77 @@ fn export_json_produce_json_valido_con_null() {
     assert!(content.contains("\"note\": null"), "NULL non reso come null: {content}");
     assert!(content.contains("Manzoni"), "valore atteso assente: {content}");
 }
+
+/// Lo **schema neutro** deve mappare correttamente i tipi dichiarati di SQLite
+/// (affinità di tipo) su `AbstractType`, e riportare nullabilità/chiave
+/// primaria per ogni colonna.
+#[test]
+fn read_schema_mappa_i_tipi_sulle_affinita_sqlite() {
+    use charon_core::schema::AbstractType;
+
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let sql = d.join("tipi.sql");
+    write(
+        &sql,
+        r#"
+        CREATE TABLE vari (
+          id INTEGER PRIMARY KEY,
+          conto BIGINT,
+          nome VARCHAR(50) NOT NULL,
+          descrizione TEXT,
+          attivo BOOLEAN,
+          punteggio REAL,
+          prezzo DECIMAL(10,2),
+          dati BLOB,
+          senza_tipo,
+          creato_il DATETIME,
+          giorno DATE,
+          ora TIME
+        );
+        "#,
+    );
+    let db = conn(&d.join("tipi.db"));
+    ok(
+        ops::import(&db, &sql.display().to_string(), Prefer::Rust, false),
+        "import schema tipi",
+    );
+
+    let model = charon_core::sqlite::rust_read_schema(&db).expect("read_schema");
+    let table = model.table("vari").expect("tabella 'vari' assente dallo schema");
+
+    let col = |name: &str| {
+        table
+            .columns
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("colonna '{name}' assente: {:?}", table.columns))
+    };
+
+    // INTEGER PRIMARY KEY: chiave, non nullable per via del vincolo PK.
+    let id = col("id");
+    assert_eq!(id.ty, AbstractType::Integer { bits: 32 });
+    assert!(id.primary_key, "'id' doveva essere la chiave primaria");
+
+    assert_eq!(col("conto").ty, AbstractType::Integer { bits: 64 }, "BIGINT -> Integer{{64}}");
+
+    let nome = col("nome");
+    assert_eq!(nome.ty, AbstractType::Text { max: Some(50) });
+    assert!(!nome.nullable, "NOT NULL non rilevato su 'nome'");
+
+    assert_eq!(col("descrizione").ty, AbstractType::Text { max: None });
+    assert!(col("descrizione").nullable);
+
+    assert_eq!(col("attivo").ty, AbstractType::Boolean);
+    assert_eq!(col("punteggio").ty, AbstractType::Float { double: true });
+    assert_eq!(
+        col("prezzo").ty,
+        AbstractType::Decimal { precision: Some(10), scale: Some(2) }
+    );
+    assert_eq!(col("dati").ty, AbstractType::Binary { max: None });
+    // Colonna senza tipo dichiarato: SQLite le assegna affinità BLOB.
+    assert_eq!(col("senza_tipo").ty, AbstractType::Binary { max: None });
+    assert_eq!(col("creato_il").ty, AbstractType::Timestamp { tz: false });
+    assert_eq!(col("giorno").ty, AbstractType::Date);
+    assert_eq!(col("ora").ty, AbstractType::Time);
+}

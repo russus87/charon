@@ -400,19 +400,43 @@ pub fn oracle_setup(path: &str) -> OpResult {
 /// MySQL/MariaDB) via il fallback puro Rust: legge i cataloghi, i tool nativi
 /// non c'entrano.
 pub fn compare(src: &Connection, dst: &Connection) -> Result<crate::compare::DbDiff> {
-    if src.engine != dst.engine {
-        return Err(Error::Unsupported(
-            "il confronto richiede due database dello stesso motore".into(),
-        ));
-    }
     let (src, _gs) = prepare(src)?;
     let (dst, _gd) = prepare(dst)?;
-    match src.engine {
-        Engine::Postgres => postgres::rust_compare(&src, &dst),
-        Engine::Oracle => oracle::rust_compare(&src, &dst),
-        Engine::Sqlserver => mssql::rust_compare(&src, &dst),
-        Engine::Sqlite => sqlite::rust_compare(&src, &dst),
-        Engine::Mysql => mysql::rust_compare(&src, &dst),
+    if src.engine == dst.engine {
+        // Stesso motore: confronto pieno (schema + conteggio righe).
+        match src.engine {
+            Engine::Postgres => postgres::rust_compare(&src, &dst),
+            Engine::Oracle => oracle::rust_compare(&src, &dst),
+            Engine::Sqlserver => mssql::rust_compare(&src, &dst),
+            Engine::Sqlite => sqlite::rust_compare(&src, &dst),
+            Engine::Mysql => mysql::rust_compare(&src, &dst),
+        }
+    } else {
+        // Cross-motore: leggi i due schemi neutri e confrontali sui tipi
+        // normalizzati (senza conteggio righe).
+        let s = read_schema(&src)?;
+        let d = read_schema(&dst)?;
+        Ok(crate::schema::diff_schemas(&s, &d, conn_label(&src), conn_label(&dst)))
+    }
+}
+
+/// Legge lo schema neutro di un database (dispatch per motore).
+fn read_schema(conn: &Connection) -> Result<crate::schema::SchemaModel> {
+    match conn.engine {
+        Engine::Postgres => postgres::rust_read_schema(conn),
+        Engine::Oracle => oracle::rust_read_schema(conn),
+        Engine::Sqlserver => mssql::rust_read_schema(conn),
+        Engine::Sqlite => sqlite::rust_read_schema(conn),
+        Engine::Mysql => mysql::rust_read_schema(conn),
+    }
+}
+
+/// Etichetta leggibile di una connessione (col motore, utile nel diff cross-motore).
+fn conn_label(conn: &Connection) -> String {
+    if conn.engine.is_file_based() {
+        format!("{} · {}", conn.engine.label(), conn.database)
+    } else {
+        format!("{} · {}:{}/{}", conn.engine.label(), conn.host, conn.port, conn.database)
     }
 }
 

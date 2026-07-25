@@ -41,3 +41,11 @@ tauri-plugin-notification = "2"
 tauri-plugin-process = "2"
 # La logica vera (dump/import/clone) vive nel crate "core".
 charon-core = { path = "../core" }
+# Portachiavi nativo del sistema per le password DB/SSH (mai in chiaro su disco).
+# crypto-rust + sync-secret-service: nessuna dipendenza da librerie C di sistema.
+keyring = { version = "3", features = [
+  "apple-native",
+  "windows-native",
+  "sync-secret-service",
+  "crypto-rust",
+] }

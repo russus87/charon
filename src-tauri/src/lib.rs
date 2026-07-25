@@ -239,22 +239,52 @@ async fn export_diff(
     .await
 }
 
-/// Elenco delle connessioni salvate.
+/// Portachiavi nativo del sistema (macOS Keychain / Windows Credential Manager /
+/// Secret Service su Linux), backend concreto del [`connections::SecretStore`].
+/// Le password del database e del tunnel SSH vivono qui: su disco
+/// (`connections.json`) restano solo stringhe vuote.
+struct KeyringStore;
+
+/// Namespace del portachiavi: distingue i segreti di Charon da quelli di altre app.
+const KEYRING_SERVICE: &str = "com.russus.charon";
+
+impl connections::SecretStore for KeyringStore {
+    fn get(&self, account: &str) -> Option<String> {
+        keyring::Entry::new(KEYRING_SERVICE, account)
+            .ok()?
+            .get_password()
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+    fn set(&self, account: &str, value: &str) -> charon_core::Result<()> {
+        keyring::Entry::new(KEYRING_SERVICE, account)
+            .and_then(|e| e.set_password(value))
+            .map_err(|e| charon_core::Error::msg(format!("portachiavi: {e}")))
+    }
+    fn delete(&self, account: &str) {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, account) {
+            let _ = entry.delete_credential();
+        }
+    }
+}
+
+/// Elenco delle connessioni salvate (password risolte dal portachiavi).
 #[tauri::command]
 fn list_connections() -> Vec<ConnectionProfile> {
-    connections::list()
+    connections::list(&KeyringStore)
 }
 
 /// Inserisce/aggiorna una connessione salvata; ritorna la lista aggiornata.
+/// I segreti finiscono nel portachiavi, il file resta senza.
 #[tauri::command]
 fn save_connection(profile: ConnectionProfile) -> std::result::Result<Vec<ConnectionProfile>, String> {
-    connections::save(profile).map_err(|e| e.to_string())
+    connections::save(profile, &KeyringStore).map_err(|e| e.to_string())
 }
 
-/// Elimina una connessione salvata; ritorna la lista aggiornata.
+/// Elimina una connessione salvata (e i suoi segreti dal portachiavi); ritorna la lista.
 #[tauri::command]
 fn delete_connection(id: String) -> std::result::Result<Vec<ConnectionProfile>, String> {
-    connections::delete(&id).map_err(|e| e.to_string())
+    connections::delete(&id, &KeyringStore).map_err(|e| e.to_string())
 }
 
 /// Punto di ingresso dell'app Tauri.
@@ -263,6 +293,12 @@ pub fn run() {
     // Se è configurato un Oracle Instant Client, assicura che il loader dinamico
     // lo trovi (può rilanciare il processo una volta, prima di avviare la UI).
     charon_core::oracle::ensure_client_env();
+
+    // Migra eventuali password in chiaro di un vecchio connections.json nel
+    // portachiavi (idempotente: a regime non trova nulla da spostare).
+    if let Err(e) = connections::migrate_plaintext(&KeyringStore) {
+        log::warn!("migrazione credenziali nel portachiavi non riuscita: {e}");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new().build())

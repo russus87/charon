@@ -1,0 +1,23 @@
+# SQL Server "usa e getta" per provare Charon senza client nativi installati
+# (il driver TDS è puro-Rust: `tiberius`). Un solo container; i database di prova
+# (charon_src popolato, charon_full vuoto per il clone) vengono creati dallo
+# script di seed dopo l'avvio — l'immagine mssql NON esegue init automatici come
+# fa postgres, quindi il seed lo applica run-mssql-test.sh via sqlcmd.
+#
+# Porta host 11433 per non collidere con un eventuale SQL Server locale (1433).
+services:
+  charon-mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: charon-mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Charon_Pw_2026"
+      MSSQL_PID: "Developer"
+    ports:
+      - "11433:1433"
+    healthcheck:
+      # sqlcmd 18 richiede -C (trust del certificato self-signed) e -b (exit code su errore).
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -b -Q 'SELECT 1' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40

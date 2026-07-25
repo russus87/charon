@@ -8,9 +8,21 @@
     r?.method === "rust" ? "puro Rust (best-effort)" : "tool nativi",
   );
   let lines = $derived(app.busy ? app.liveLog.length : (r?.log?.length ?? 0));
+  // Percentuale determinata (o null = indeterminato → spinner).
+  let pct = $derived(
+    app.busy && app.progress && app.progress.total > 0
+      ? Math.min(100, Math.round((app.progress.done / app.progress.total) * 100))
+      : null,
+  );
 </script>
 
 <div class="console" class:open={app.showLog}>
+  {#if app.busy && pct !== null}
+    <div class="pbar" role="progressbar" aria-valuenow={pct} aria-valuemin="0" aria-valuemax="100"
+         aria-label="Avanzamento operazione">
+      <div class="pbar-fill" style="width: {pct}%"></div>
+    </div>
+  {/if}
   {#if app.showLog}
     <div class="log">
       {#if app.busy}
@@ -41,7 +53,11 @@
       <span class="idle">Nessuna operazione ancora eseguita.</span>
     {/if}
     {#if app.busy}
-      <span class="mini spinner">Operazione in corso…</span>
+      {#if pct !== null}
+        <span class="mini">{pct}% · {app.progress.done}/{app.progress.total} tabelle</span>
+      {:else}
+        <span class="mini spinner">Operazione in corso…</span>
+      {/if}
     {/if}
     <button class="btn ghost sm toggle" onclick={toggleLog} aria-expanded={app.showLog}>
       {app.showLog ? "Nascondi log ▾" : `Mostra log${lines ? ` (${lines})` : ""} ▴`}
@@ -69,6 +85,24 @@
     gap: 12px;
     padding: 10px 18px 10px 30px;
     flex: none;
+  }
+  /* Barra di avanzamento determinata: linea sottile in cima alla console. */
+  .pbar {
+    flex: none;
+    height: 3px;
+    width: 100%;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .pbar-fill {
+    height: 100%;
+    background: var(--brand, #2e7d5b);
+    transition: width 0.25s ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pbar-fill {
+      transition: none;
+    }
   }
   .title {
     font-size: 14px;

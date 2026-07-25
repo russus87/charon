@@ -15,6 +15,25 @@ use tauri::{AppHandle, Emitter};
 
 /// Nome dell'evento con cui il backend invia le righe di avanzamento alla UI.
 const PROGRESS_EVENT: &str = "charon://progress";
+/// Evento di avanzamento **strutturato** (percentuale): payload `{done, total}`.
+const PROGRESS_PCT_EVENT: &str = "charon://progress-pct";
+
+/// Installa i sink di avanzamento (testo + percentuale) che inoltrano alla UI,
+/// esegue `f`, poi li rimuove. Da chiamare dentro `spawn_blocking`.
+fn with_progress_sinks<T>(app: &AppHandle, f: impl FnOnce() -> T) -> T {
+    let text_app = app.clone();
+    charon_core::progress::set_sink(Some(Box::new(move |line: &str| {
+        let _ = text_app.emit(PROGRESS_EVENT, line.to_string());
+    })));
+    let pct_app = app.clone();
+    charon_core::progress::set_progress_sink(Some(Box::new(move |done: u64, total: u64| {
+        let _ = pct_app.emit(PROGRESS_PCT_EVENT, serde_json::json!({"done": done, "total": total}));
+    })));
+    let res = f();
+    charon_core::progress::set_sink(None);
+    charon_core::progress::set_progress_sink(None);
+    res
+}
 
 /// Esegue un'operazione BLOCCANTE del core fuori dal main thread (così la webview
 /// resta reattiva) e inoltra l'**avanzamento live** alla UI: imposta un sink che
@@ -26,13 +45,7 @@ where
     F: FnOnce() -> OpResult + Send + 'static,
 {
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let sink_app = app.clone();
-        charon_core::progress::set_sink(Some(Box::new(move |line: &str| {
-            let _ = sink_app.emit(PROGRESS_EVENT, line.to_string());
-        })));
-        let res = f();
-        charon_core::progress::set_sink(None); // ripulisce il sink del thread
-        res
+        with_progress_sinks(&app, f)
     })
     .await;
     match result {
@@ -56,13 +69,7 @@ where
     F: FnOnce() -> charon_core::Result<T> + Send + 'static,
 {
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let sink_app = app.clone();
-        charon_core::progress::set_sink(Some(Box::new(move |line: &str| {
-            let _ = sink_app.emit(PROGRESS_EVENT, line.to_string());
-        })));
-        let res = f();
-        charon_core::progress::set_sink(None);
-        res
+        with_progress_sinks(&app, f)
     })
     .await;
     match result {

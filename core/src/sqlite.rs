@@ -948,9 +948,12 @@ mod rustimpl {
         out.push_str("-- Il DDL è quello originale conservato da SQLite in sqlite_master.\n");
         out.push_str("PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\n\n");
 
-        for (name, sql) in objects(&c, "table")? {
+        let tables = objects(&c, "table")?;
+        let total = tables.len() as u64;
+        for (i, (name, sql)) in tables.iter().enumerate() {
+            crate::progress::report((i + 1) as u64, total);
             out.push_str(&format!("DROP TABLE IF EXISTS \"{name}\";\n"));
-            out.push_str(&sql);
+            out.push_str(sql);
             out.push_str(";\n");
 
             // Dati della tabella.

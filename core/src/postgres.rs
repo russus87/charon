@@ -587,9 +587,11 @@ mod rustimpl {
         out.push_str("-- Per fedeltà completa (indici, vincoli, sequenze, tipi) usa pg_dump.\n\n");
         out.push_str("SET client_encoding = 'UTF8';\n\n");
 
-        for trow in &tables {
+        let total = tables.len() as u64;
+        for (i, trow) in tables.iter().enumerate() {
             let table: String = trow.get(0);
             crate::progress::emit(&format!("  tabella {table}…"));
+            crate::progress::report((i + 1) as u64, total);
 
             let cols = client
                 .query(
@@ -797,7 +799,9 @@ mod rustimpl {
             .map_err(|e| Error::Msg(format!("TRUNCATE: {e}")))?;
 
         let mut total = 0usize;
-        for table in &tables {
+        let n_tables = tables.len() as u64;
+        for (i, table) in tables.iter().enumerate() {
+            crate::progress::report((i + 1) as u64, n_tables);
             let cols = s
                 .query(
                     "SELECT column_name FROM information_schema.columns \

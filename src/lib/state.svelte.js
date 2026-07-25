@@ -65,6 +65,7 @@ export const app = $state({
   importPath: "", // file da importare
   busy: false, // operazione in corso
   liveLog: [], // righe di avanzamento in tempo reale (evento charon://progress)
+  progress: null, // avanzamento strutturato {done,total} (evento charon://progress-pct) o null
   result: null, // ultimo OpResult
   showLog: false, // console (log dettagliato) espansa: l'utente la apre se serve
   resultModal: false, // popup di riepilogo a fine operazione
@@ -381,6 +382,13 @@ export async function initProgress() {
   await listen("charon://progress", (e) => {
     if (app.busy) app.liveLog.push(String(e.payload));
   });
+  // Avanzamento strutturato (percentuale): {done,total}. total<=0 = indeterminato.
+  await listen("charon://progress-pct", (e) => {
+    const p = e.payload;
+    if (app.busy && p && typeof p.total === "number" && p.total > 0) {
+      app.progress = { done: p.done, total: p.total };
+    }
+  });
 }
 
 // Titoli del popup di riepilogo, per operazione ed esito.
@@ -411,6 +419,7 @@ async function withBusy(fn, op = null) {
   app.busy = true;
   app.result = null;
   app.liveLog = []; // azzera il log live a ogni nuova operazione
+  app.progress = null; // azzera la barra di avanzamento
   app.lastOp = op;
   try {
     app.result = await fn();
